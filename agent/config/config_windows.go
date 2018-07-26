@@ -114,6 +114,8 @@ func (cfg *Config) platformOverrides() {
 		CPUUnbounded: cpuUnbounded,
 	}
 	cfg.PlatformVariables = platformVariables
+	seelog.Warnf("CoveoDebug: func platformOverrides has cfg.PlatformVariables %s config", cfg.PlatformVariables)
+
 }
 
 // platformString returns platform-specific config data that can be serialized
