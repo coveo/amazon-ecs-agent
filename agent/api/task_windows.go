@@ -34,11 +34,11 @@ const (
 	minimumCPUPercent = 1
 )
 
-// platformFields consists of fields specific to Windows for a task
-type platformFields struct {
+// PlatformFields consists of fields specific to Windows for a task
+type PlatformFields struct {
 	// cpuUnbounded determines whether a mix of unbounded and bounded CPU tasks
 	// are allowed to run in the instance
-	cpuUnbounded bool
+	CpuUnbounded bool `json:"cpuUnbounded"`
 }
 
 var cpuShareScaleFactor = runtime.NumCPU() * cpuSharesPerCore
@@ -46,11 +46,11 @@ var cpuShareScaleFactor = runtime.NumCPU() * cpuSharesPerCore
 // adjustForPlatform makes Windows-specific changes to the task after unmarshal
 func (task *Task) adjustForPlatform(cfg *config.Config) {
 	task.downcaseAllVolumePaths()
-	platformFields := platformFields{
-		cpuUnbounded: cfg.PlatformVariables.CPUUnbounded,
+	platformFields := PlatformFields{
+		CpuUnbounded: cfg.PlatformVariables.CPUUnbounded,
 	}
-	seelog.Warnf("CoveoDebug: cpuUnbounded in func adjustForPlatform is %s", platformFields.cpuUnbounded)
-	task.platformFields = platformFields
+	seelog.Warnf("CoveoDebug: cpuUnbounded in func adjustForPlatform is %s", platformFields.CpuUnbounded)
+	task.PlatformFields = platformFields
 }
 
 // downcaseAllVolumePaths forces all volume paths (host path and container path)
@@ -114,11 +114,11 @@ func (task *Task) overrideDefaultMemorySwappiness(hostConfig *docker.HostConfig)
 // want.  Instead, we convert 0 to 2 to be closer to expected behavior. The
 // reason for 2 over 1 is that 1 is an invalid value (Linux's choice, not Docker's).
 func (task *Task) dockerCPUShares(containerCPU uint) int64 {
-	seelog.Warnf("CoveoDebug: func dockerCPUShares has containerCPU %s value and task.platformFields.cpuUnbounded is %s. ", containerCPU, task.platformFields.cpuUnbounded)
-	if containerCPU <= 1 && !task.platformFields.cpuUnbounded {
+	seelog.Warnf("CoveoDebug: func dockerCPUShares has containerCPU %s value and task.PlatformFields.cpuUnbounded is %s. ", containerCPU, task.PlatformFields.CpuUnbounded)
+	if containerCPU <= 1 && !task.PlatformFields.CpuUnbounded {
 		seelog.Warnf(
 			"Converting CPU shares to allowed minimum of 2 for task arn: [%s] and cpu shares: %d. cpuUnbounded is %s",
-			task.Arn, containerCPU, task.platformFields.cpuUnbounded)
+			task.Arn, containerCPU, task.PlatformFields.CpuUnbounded)
 		return 2
 	}
 	return int64(containerCPU)

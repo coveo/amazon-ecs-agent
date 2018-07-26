@@ -144,8 +144,8 @@ type Task struct {
 	// MemoryCPULimitsEnabled to determine if task supports CPU, memory limits
 	MemoryCPULimitsEnabled bool `json:"MemoryCPULimitsEnabled,omitempty"`
 
-	// platformFields consists of fields specific to linux/windows for a task
-	platformFields platformFields
+	// PlatformFields consists of fields specific to linux/windows for a task
+	PlatformFields PlatformFields `json:"PlatformFields,omitempty"`
 
 	// lock is for protecting all fields in the task struct
 	lock sync.RWMutex
