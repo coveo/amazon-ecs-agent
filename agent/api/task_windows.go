@@ -49,7 +49,7 @@ func (task *Task) adjustForPlatform(cfg *config.Config) {
 	platformFields := platformFields{
 		cpuUnbounded: cfg.PlatformVariables.CPUUnbounded,
 	}
-	seelog.Warnf("CoveoDebug: cpuUnbounded in func adjustForPlatform is %s", cpuUnbounded)
+	seelog.Warnf("CoveoDebug: cpuUnbounded in func adjustForPlatform is %s", platformFields.cpuUnbounded)
 	task.platformFields = platformFields
 }
 
