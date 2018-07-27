@@ -20,8 +20,6 @@ import (
 	"sync"
 	"time"
 
-	"encoding/json"
-
 	"github.com/aws/amazon-ecs-agent/agent/api"
 	apierrors "github.com/aws/amazon-ecs-agent/agent/api/errors"
 	"github.com/aws/amazon-ecs-agent/agent/config"
@@ -882,16 +880,6 @@ func (engine *DockerTaskEngine) createContainer(task *api.Task, container *api.C
 			seelog.Warnf("Task engine [%s]: unable to create metadata for container %s: %v",
 				task.Arn, container.Name, mderr)
 		}
-	}
-
-	marshalledConfig, marshalErr := json.Marshal(config)
-	marshalledHostConfig, marshalHostConfigErr := json.Marshal(hostConfig)
-	if marshalErr != nil {
-		seelog.Infof("TaskArn: %s, Container: %s, unable to marshal docker config: %s", task.Arn, container.Name, marshalErr)
-	} else if marshalHostConfigErr != nil {
-		seelog.Infof("TaskArn: %s, Container: %s, unable to marshal docker host config: %s", task.Arn, container.Name, marshalHostConfigErr)
-	} else {
-		seelog.Infof("TaskArn: %s, Container: %s, DockerConfig: %s, DockerHostConfig: %s", task.Arn, container.Name, string(marshalledConfig), string(marshalledHostConfig))
 	}
 
 	createContainerBegin := time.Now()
