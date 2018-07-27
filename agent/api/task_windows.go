@@ -49,7 +49,6 @@ func (task *Task) adjustForPlatform(cfg *config.Config) {
 	platformFields := PlatformFields{
 		CpuUnbounded: cfg.PlatformVariables.CPUUnbounded,
 	}
-	seelog.Warnf("CoveoDebug: cpuUnbounded in func adjustForPlatform is %s", platformFields.CpuUnbounded)
 	task.PlatformFields = platformFields
 }
 
@@ -81,7 +80,6 @@ func (task *Task) platformHostConfigOverride(hostConfig *docker.HostConfig) erro
 	task.overrideDefaultMemorySwappiness(hostConfig)
 	// Convert the CPUShares to CPUPercent
 	hostConfig.CPUPercent = hostConfig.CPUShares * percentageFactor / int64(cpuShareScaleFactor)
-	seelog.Warnf("CoveoDebug: hostConfig.CPUPercent is set to %s and hostConfig.CPUShares is %s", hostConfig.CPUPercent, hostConfig.CPUShares)
 	if hostConfig.CPUPercent == 0 && hostConfig.CPUShares != 0 {
 		// if CPU percent is too low, we set it to the minimum(linux and some windows tasks).
 		// if the CPU is explicitly set to zero or not set at all, and CPU unbounded
@@ -114,11 +112,10 @@ func (task *Task) overrideDefaultMemorySwappiness(hostConfig *docker.HostConfig)
 // want.  Instead, we convert 0 to 2 to be closer to expected behavior. The
 // reason for 2 over 1 is that 1 is an invalid value (Linux's choice, not Docker's).
 func (task *Task) dockerCPUShares(containerCPU uint) int64 {
-	seelog.Warnf("CoveoDebug: func dockerCPUShares has containerCPU %s value and task.PlatformFields.cpuUnbounded is %s. ", containerCPU, task.PlatformFields.CpuUnbounded)
 	if containerCPU <= 1 && !task.PlatformFields.CpuUnbounded {
 		seelog.Warnf(
-			"Converting CPU shares to allowed minimum of 2 for task arn: [%s] and cpu shares: %d. cpuUnbounded is %s",
-			task.Arn, containerCPU, task.PlatformFields.CpuUnbounded)
+			"Converting CPU shares to allowed minimum of 2 for task arn: [%s] and cpu shares: %d",
+			task.Arn, containerCPU)
 		return 2
 	}
 	return int64(containerCPU)
