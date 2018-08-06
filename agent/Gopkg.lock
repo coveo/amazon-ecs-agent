@@ -42,6 +42,8 @@
     "aws/request",
     "aws/session",
     "aws/signer/v4",
+    "internal/sdkio",
+    "internal/sdkrand",
     "internal/shareddefaults",
     "private/model/api",
     "private/protocol",
@@ -55,10 +57,12 @@
     "service/cloudwatch",
     "service/cloudwatchlogs",
     "service/iam",
+    "service/secretsmanager",
+    "service/secretsmanager/secretsmanageriface",
     "service/sts"
   ]
-  revision = "decd990ddc5dcdf2f73309cbcab90d06b996ca28"
-  version = "v1.12.67"
+  revision = "4f5d298bd2dcb34b06d944594f458d1f77ac4d66"
+  version = "v1.13.42"
 
 [[projects]]
   name = "github.com/cihub/seelog"
@@ -142,17 +146,23 @@
     "pkg/jsonmessage",
     "pkg/longpath",
     "pkg/mount",
+    "pkg/plugins",
+    "pkg/plugins/transport",
     "pkg/pools",
     "pkg/stdcopy",
     "pkg/system",
     "pkg/term",
     "pkg/term/windows"
   ]
-  revision = "e4d0fe84f9ea88b0e0cfd847412c9f29442cc62d"
+  revision = "7270b01e5dd1fca3fd7fed0d6fb9d2769ec5f4ba"
 
 [[projects]]
   name = "github.com/docker/go-connections"
-  packages = ["nat"]
+  packages = [
+    "nat",
+    "sockets",
+    "tlsconfig"
+  ]
   revision = "3ede32e2033de7505e6500d6c868c2b9ed9f169d"
   version = "v0.3.0"
 
@@ -189,6 +199,18 @@
   name = "github.com/golang/mock"
   packages = ["gomock"]
   revision = "58cd061d09382b6011f84c1291ebe50ef2e25bab"
+
+[[projects]]
+  name = "github.com/gorilla/context"
+  packages = ["."]
+  revision = "08b5f424b9271eedf6f9f0ce86cb9396ed337a42"
+  version = "v1.1.1"
+
+[[projects]]
+  name = "github.com/gorilla/mux"
+  packages = ["."]
+  revision = "e3702bed27f0d39777b0b37b664b6280e8ef8fbf"
+  version = "v1.6.2"
 
 [[projects]]
   name = "github.com/gorilla/websocket"
@@ -293,7 +315,8 @@
   packages = [
     "context",
     "html",
-    "html/atom"
+    "html/atom",
+    "proxy"
   ]
   revision = "a337091b0525af65de94df2eb7e98bd9962dcbe2"
 
@@ -326,6 +349,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "a5f72ace73e7045edeb6973b3f13bbe178df1d00c646bcc37f9dff0a616ba370"
+  inputs-digest = "f4f297a53fd373b8a7020e6770341364175896388193424979564197721a57d3"
   solver-name = "gps-cdcl"
   solver-version = 1
