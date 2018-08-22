@@ -891,15 +891,37 @@ func TestPrivateRegistryAuthOverASM(t *testing.T) {
 
 // TestContainerHealthMetrics tests the container health metrics was sent to backend
 func TestContainerHealthMetrics(t *testing.T) {
-	// TODO remove this after backend changes deployed
-	t.Skip("Not supported")
 	containerHealthWithoutStartPeriodTest(t, "container-health")
 }
 
 // TestContainerHealthMetricsWithStartPeriod tests the container health metrics
 // with start period configured in the task definition
 func TestContainerHealthMetricsWithStartPeriod(t *testing.T) {
-	// TODO remove this after backend changes deployed
-	t.Skip("Not supported")
 	containerHealthWithStartPeriodTest(t, "container-health")
+}
+
+// TestTwoTasksSharedLocalVolume tests shared volume between two tasks
+func TestTwoTasksSharedLocalVolume(t *testing.T) {
+	agent := RunAgent(t, nil)
+	defer agent.Cleanup()
+	agent.RequireVersion(">=1.20.0")
+
+	// start writer task first
+	wTask, err := agent.StartTask(t, "task-shared-vol-write")
+	require.NoError(t, err, "Register task definition failed")
+
+	// Wait for the first task to create the volume
+	wErr := wTask.WaitStopped(waitTaskStateChangeDuration)
+	require.NoError(t, wErr, "Error waiting for task to transition to STOPPED")
+	wExitCode, _ := wTask.ContainerExitcode("task-shared-vol-write")
+	assert.Equal(t, 42, wExitCode, fmt.Sprintf("Expected exit code of 42; got %d", wExitCode))
+
+	// then reader task try to read from the volume
+	rTask, err := agent.StartTask(t, "task-shared-vol-read")
+	require.NoError(t, err, "Register task definition failed")
+
+	rErr := rTask.WaitStopped(waitTaskStateChangeDuration)
+	require.NoError(t, rErr, "Error waiting for task to transition to STOPPED")
+	rExitCode, _ := rTask.ContainerExitcode("task-shared-vol-read")
+	assert.Equal(t, 42, rExitCode, fmt.Sprintf("Expected exit code of 42; got %d", rExitCode))
 }

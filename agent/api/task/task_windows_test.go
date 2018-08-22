@@ -27,6 +27,7 @@ import (
 	apitaskstatus "github.com/aws/amazon-ecs-agent/agent/api/task/status"
 	"github.com/aws/amazon-ecs-agent/agent/config"
 	"github.com/aws/amazon-ecs-agent/agent/dockerclient"
+	taskresourcevolume "github.com/aws/amazon-ecs-agent/agent/taskresource/volume"
 
 	"github.com/fsouza/go-dockerclient"
 	"github.com/stretchr/testify/assert"
@@ -74,6 +75,7 @@ func TestPostUnmarshalWindowsCanonicalPaths(t *testing.T) {
 		Volumes: []*ecsacs.Volume{
 			{
 				Name: strptr("sourceVolume"),
+				Type: strptr("host"),
 				Host: &ecsacs.HostVolumeProperties{
 					SourcePath: strptr(`C:/Host/path`),
 				},
@@ -100,7 +102,8 @@ func TestPostUnmarshalWindowsCanonicalPaths(t *testing.T) {
 		Volumes: []TaskVolume{
 			{
 				Name: "sourceVolume",
-				Volume: &FSHostVolume{
+				Type: "host",
+				Volume: &taskresourcevolume.FSHostVolume{
 					FSSourcePath: `c:\host\path`,
 				},
 			},
@@ -112,7 +115,7 @@ func TestPostUnmarshalWindowsCanonicalPaths(t *testing.T) {
 	task, err := TaskFromACS(&taskFromAcs, &ecsacs.PayloadMessage{SeqNum: &seqNum})
 	assert.Nil(t, err, "Should be able to handle acs task")
 	cfg := config.Config{TaskCPUMemLimit: config.ExplicitlyDisabled}
-	task.PostUnmarshalTask(&cfg, nil, nil)
+	task.PostUnmarshalTask(&cfg, nil, nil, nil, nil)
 
 	assert.Equal(t, expectedTask.Containers, task.Containers, "Containers should be equal")
 	assert.Equal(t, expectedTask.Volumes, task.Volumes, "Volumes should be equal")
