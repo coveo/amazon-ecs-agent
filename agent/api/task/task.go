@@ -79,7 +79,7 @@ type TaskOverrides struct{}
 
 // Task is the internal representation of a task in the ECS agent
 type Task struct {
-	// Arn is the unique identifer for the task
+	// Arn is the unique identifier for the task
 	Arn string
 	// Overrides are the overrides applied to a task
 	Overrides TaskOverrides `json:"-"`
@@ -172,7 +172,7 @@ type Task struct {
 }
 
 // TaskFromACS translates ecsacs.Task to apitask.Task by first marshaling the received
-// ecsacs.Task to json and unmrashaling it as apitask.Task
+// ecsacs.Task to json and unmarshaling it as apitask.Task
 func TaskFromACS(acsTask *ecsacs.Task, envelope *ecsacs.PayloadMessage) (*Task, error) {
 	data, err := jsonutil.BuildJSON(acsTask)
 	if err != nil {
@@ -226,7 +226,7 @@ func (task *Task) PostUnmarshalTask(cfg *config.Config,
 	if err != nil {
 		return apierrors.NewResourceInitError(task.Arn, err)
 	}
-	err = task.initializeDockerVolumes(dockerClient, ctx)
+	err = task.initializeDockerVolumes(cfg.SharedVolumeMatchFullConfig, dockerClient, ctx)
 	if err != nil {
 		return apierrors.NewResourceInitError(task.Arn, err)
 	}
@@ -285,7 +285,7 @@ func (task *Task) volumeName(name string) string {
 
 // initializeDockerVolumes checks the volume resource in the task to determine if the agent
 // should create the volume before creating the container
-func (task *Task) initializeDockerVolumes(dockerClient dockerapi.DockerClient, ctx context.Context) error {
+func (task *Task) initializeDockerVolumes(sharedVolumeMatchFullConfig bool, dockerClient dockerapi.DockerClient, ctx context.Context) error {
 	for i, vol := range task.Volumes {
 		// No need to do this for non-docker volume, eg: host bind/empty volume
 		if vol.Type != DockerVolumeType {
@@ -304,7 +304,7 @@ func (task *Task) initializeDockerVolumes(dockerClient dockerapi.DockerClient, c
 			}
 		} else {
 			// Agent needs to create shared volume if that's auto provisioned
-			err := task.addSharedVolumes(ctx, dockerClient, &task.Volumes[i])
+			err := task.addSharedVolumes(sharedVolumeMatchFullConfig, ctx, dockerClient, &task.Volumes[i])
 			if err != nil {
 				return err
 			}
@@ -336,7 +336,7 @@ func (task *Task) addTaskScopedVolumes(ctx context.Context, dockerClient dockera
 }
 
 // addSharedVolumes adds shared volume into task resources and updates container dependency
-func (task *Task) addSharedVolumes(ctx context.Context, dockerClient dockerapi.DockerClient,
+func (task *Task) addSharedVolumes(SharedVolumeMatchFullConfig bool, ctx context.Context, dockerClient dockerapi.DockerClient,
 	vol *TaskVolume) error {
 
 	volumeConfig := vol.Volume.(*taskresourcevolume.DockerVolumeConfig)
@@ -379,6 +379,11 @@ func (task *Task) addSharedVolumes(ctx context.Context, dockerClient dockerapi.D
 	}
 
 	seelog.Infof("initialize volume: Task [%s]: volume [%s] already exists", task.Arn, volumeConfig.DockerVolumeName)
+	if !SharedVolumeMatchFullConfig {
+		seelog.Infof("initialize volume: Task [%s]: ECS_SHARED_VOLUME_MATCH_FULL_CONFIG is set to false and volume with name [%s] is found", task.Arn, volumeConfig.DockerVolumeName)
+		return nil
+	}
+
 	// validate all the volume metadata fields match to the configuration
 	if len(volumeMetadata.DockerVolume.Labels) == 0 && len(volumeMetadata.DockerVolume.Labels) == len(volumeConfig.Labels) {
 		seelog.Infof("labels are both empty or null: Task [%s]: volume [%s]", task.Arn, volumeConfig.DockerVolumeName)
@@ -490,6 +495,7 @@ func (task *Task) BuildCNIConfig() (*ecscni.Config, error) {
 	cfg.ENIID = eni.ID
 	cfg.ID = eni.MacAddress
 	cfg.ENIMACAddress = eni.MacAddress
+	cfg.SubnetGatewayIPV4Address = eni.GetSubnetGatewayIPV4Address()
 	for _, ipv4 := range eni.IPV4Addresses {
 		if ipv4.Primary {
 			cfg.ENIIPV4Address = ipv4.Address
@@ -518,18 +524,21 @@ func (task *Task) addNetworkResourceProvisioningDependency(cfg *config.Config) {
 	if !task.isNetworkModeVPC() {
 		return
 	}
-	for _, container := range task.Containers {
-		if container.IsInternal() {
-			continue
-		}
-		container.BuildContainerDependency(PauseContainerName, apicontainerstatus.ContainerResourcesProvisioned, apicontainerstatus.ContainerPulled)
-	}
 	pauseContainer := apicontainer.NewContainerWithSteadyState(apicontainerstatus.ContainerResourcesProvisioned)
+	pauseContainer.TransitionDependenciesMap = make(map[apicontainerstatus.ContainerStatus]apicontainer.TransitionDependencySet)
 	pauseContainer.Name = PauseContainerName
 	pauseContainer.Image = fmt.Sprintf("%s:%s", cfg.PauseContainerImageName, cfg.PauseContainerTag)
 	pauseContainer.Essential = true
 	pauseContainer.Type = apicontainer.ContainerCNIPause
 	task.Containers = append(task.Containers, pauseContainer)
+
+	for _, container := range task.Containers {
+		if container.IsInternal() {
+			continue
+		}
+		container.BuildContainerDependency(PauseContainerName, apicontainerstatus.ContainerResourcesProvisioned, apicontainerstatus.ContainerPulled)
+		pauseContainer.BuildContainerDependency(container.Name, apicontainerstatus.ContainerStopped, apicontainerstatus.ContainerStopped)
+	}
 }
 
 // ContainerByName returns the *Container for the given name
@@ -556,18 +565,17 @@ func (task *Task) HostVolumeByName(name string) (taskresourcevolume.Volume, bool
 // UpdateMountPoints updates the mount points of volumes that were created
 // without specifying a host path.  This is used as part of the empty host
 // volume feature.
-func (task *Task) UpdateMountPoints(cont *apicontainer.Container, vols map[string]string) {
+func (task *Task) UpdateMountPoints(cont *apicontainer.Container, vols []docker.Mount) {
 	for _, mountPoint := range cont.MountPoints {
 		containerPath := getCanonicalPath(mountPoint.ContainerPath)
-		hostPath, ok := vols[containerPath]
-		if !ok {
-			// /path/ -> /path or \path\ -> \path
-			hostPath, ok = vols[strings.TrimRight(containerPath, string(filepath.Separator))]
-		}
-		if ok {
-			if hostVolume, exists := task.HostVolumeByName(mountPoint.SourceVolume); exists {
-				if empty, ok := hostVolume.(*taskresourcevolume.LocalDockerVolume); ok {
-					empty.HostPath = hostPath
+		for _, vol := range vols {
+			if strings.Compare(vol.Destination, containerPath) == 0 ||
+				// /path/ -> /path or \path\ -> \path
+				strings.Compare(vol.Destination, strings.TrimRight(containerPath, string(filepath.Separator))) == 0 {
+				if hostVolume, exists := task.HostVolumeByName(mountPoint.SourceVolume); exists {
+					if empty, ok := hostVolume.(*taskresourcevolume.LocalDockerVolume); ok {
+						empty.HostPath = vol.Source
+					}
 				}
 			}
 		}

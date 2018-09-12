@@ -39,7 +39,7 @@ const (
 
 // PlatformFields consists of fields specific to Windows for a task
 type PlatformFields struct {
-	// cpuUnbounded determines whether a mix of unbounded and bounded CPU tasks
+	// CpuUnbounded determines whether a mix of unbounded and bounded CPU tasks
 	// are allowed to run in the instance
 	CpuUnbounded bool `json:"cpuUnbounded"`
 }
@@ -116,7 +116,7 @@ func (task *Task) overrideDefaultMemorySwappiness(hostConfig *docker.HostConfig)
 // reason for 2 over 1 is that 1 is an invalid value (Linux's choice, not Docker's).
 func (task *Task) dockerCPUShares(containerCPU uint) int64 {
 	if containerCPU <= 1 && !task.PlatformFields.CpuUnbounded {
-		seelog.Warnf(
+		seelog.Debugf(
 			"Converting CPU shares to allowed minimum of 2 for task arn: [%s] and cpu shares: %d",
 			task.Arn, containerCPU)
 		return 2

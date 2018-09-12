@@ -32,7 +32,6 @@ import (
 	"github.com/aws/amazon-ecs-agent/agent/dockerclient"
 	"github.com/aws/amazon-ecs-agent/agent/dockerclient/dockerapi"
 	"github.com/aws/amazon-ecs-agent/agent/ecscni"
-	"github.com/aws/amazon-ecs-agent/agent/emptyvolume"
 	"github.com/aws/amazon-ecs-agent/agent/engine/dependencygraph"
 	"github.com/aws/amazon-ecs-agent/agent/engine/dockerstate"
 	"github.com/aws/amazon-ecs-agent/agent/eventstream"
@@ -338,8 +337,12 @@ func updateContainerMetadata(metadata *dockerapi.DockerContainerMetadata, contai
 	}
 
 	// Update volume for empty volume container
-	if metadata.Volumes != nil && container.IsInternal() {
-		task.UpdateMountPoints(container, metadata.Volumes)
+	if metadata.Volumes != nil {
+		if container.IsInternal() {
+			task.UpdateMountPoints(container, metadata.Volumes)
+		} else {
+			container.SetVolumes(metadata.Volumes)
+		}
 	}
 
 	// Set Exitcode if it's not set
@@ -666,11 +669,6 @@ func (engine *DockerTaskEngine) pullContainer(task *apitask.Task, container *api
 	case apicontainer.ContainerCNIPause:
 		// ContainerCNIPause image are managed at startup
 		return dockerapi.DockerContainerMetadata{}
-	case apicontainer.ContainerEmptyHostVolume:
-		// ContainerEmptyHostVolume image is either local (must be imported) or remote (must be pulled)
-		if emptyvolume.LocalImage {
-			return engine.client.ImportLocalEmptyVolumeImage()
-		}
 	}
 
 	if engine.imagePullRequired(engine.cfg.ImagePullBehavior, container, task.Arn) {

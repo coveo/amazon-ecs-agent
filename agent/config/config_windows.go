@@ -91,6 +91,7 @@ func DefaultConfig() Config {
 		PlatformVariables:           platformVariables,
 		TaskMetadataSteadyStateRate: DefaultTaskMetadataSteadyStateRate,
 		TaskMetadataBurstRate:       DefaultTaskMetadataBurstRate,
+		SharedVolumeMatchFullConfig: false, //only requiring shared volumes to match on name, which is default docker behavior
 	}
 }
 
@@ -112,7 +113,6 @@ func (cfg *Config) platformOverrides() {
 		CPUUnbounded: cpuUnbounded,
 	}
 	cfg.PlatformVariables = platformVariables
-
 }
 
 // platformString returns platform-specific config data that can be serialized
