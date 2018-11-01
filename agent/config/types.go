@@ -96,8 +96,8 @@ type Config struct {
 	// ContainerStartTimeout specifies the amount of time to wait to start a container
 	ContainerStartTimeout time.Duration
 
-	// DockerPullInactivityTimeout is here to override the amount of time to wait when extracting a container
-	DockerPullInactivityTimeout time.Duration
+	// ImagePullInactivityTimeout is here to override the amount of time to wait when pulling and extracting a container
+	ImagePullInactivityTimeout time.Duration
 
 	// AvailableLoggingDrivers specifies the logging drivers available for use
 	// with Docker.  If not set, it defaults to ["json-file","none"].
@@ -227,4 +227,10 @@ type Config struct {
 	// and labels. For comparing shared volume across 2 instances, this should be set to false as docker's
 	// default behavior is to match name only, and does not propagate driver options and labels through volume drivers.
 	SharedVolumeMatchFullConfig bool
+
+	// NoIID when set to true, specifies that the agent should not register the instance
+	// with instance identity document. This is required in order to accomodate scenarios in
+	// which ECS agent tries to register the instance where the instance id document is
+	// not available or needed
+	NoIID bool
 }

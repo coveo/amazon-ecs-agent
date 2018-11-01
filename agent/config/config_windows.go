@@ -36,8 +36,10 @@ const (
 	rpcPort = 135
 	// Server Message Block (SMB) over TCP
 	smbPort = 445
-	// Windows Remote Management (WinRM) listener
-	winRMPort = 5985
+	// HTTP port for Windows Remote Management (WinRM) listener
+	winRMPortHTTP = 5985
+	// HTTPS port for Windows Remote Management (WinRM) listener
+	winRMPortHTTPS = 5986
 	// DNS client
 	dnsPort = 53
 	// NetBIOS over TCP/IP
@@ -46,8 +48,8 @@ const (
 	defaultContainerStartTimeout = 8 * time.Minute
 	// minimumContainerStartTimeout specifies the minimum value for starting a container
 	minimumContainerStartTimeout = 2 * time.Minute
-	// default docker inactivity time is extra time needed on container extraction
-	defaultDockerPullInactivityTimeout = 1 * time.Minute
+	// default image pull inactivity time is extra time needed on container extraction
+	defaultImagePullInactivityTimeout = 3 * time.Minute
 )
 
 // DefaultConfig returns the default configuration for Windows
@@ -68,7 +70,8 @@ func DefaultConfig() Config {
 			rdpPort,
 			rpcPort,
 			smbPort,
-			winRMPort,
+			winRMPortHTTP,
+			winRMPortHTTPS,
 			dnsPort,
 			netBIOSPort,
 		},
@@ -82,7 +85,7 @@ func DefaultConfig() Config {
 		TaskCleanupWaitDuration:     DefaultTaskCleanupWaitDuration,
 		DockerStopTimeout:           defaultDockerStopTimeout,
 		ContainerStartTimeout:       defaultContainerStartTimeout,
-		DockerPullInactivityTimeout: defaultDockerPullInactivityTimeout,
+		ImagePullInactivityTimeout:  defaultImagePullInactivityTimeout,
 		CredentialsAuditLogFile:     filepath.Join(ecsRoot, defaultCredentialsAuditLogFile),
 		CredentialsAuditLogDisabled: false,
 		ImageCleanupDisabled:        false,
