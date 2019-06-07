@@ -1,4 +1,4 @@
-// Copyright 2014-2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Copyright 2014-2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"). You may
 // not use this file except in compliance with the License. A copy of the
@@ -35,7 +35,7 @@ import (
 	"github.com/aws/amazon-ecs-agent/agent/engine/mocks"
 	"github.com/aws/amazon-ecs-agent/agent/statechange"
 	"github.com/aws/amazon-ecs-agent/agent/utils/ttime/mocks"
-	docker "github.com/fsouza/go-dockerclient"
+	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/golang/mock/gomock"
 	"github.com/pborman/uuid"
 	"github.com/stretchr/testify/assert"
@@ -133,13 +133,13 @@ func validateContainerRunWorkflow(t *testing.T,
 	imageManager *mock_engine.MockImageManager,
 	client *mock_dockerapi.MockDockerClient,
 	roleCredentials *credentials.TaskIAMRoleCredentials,
-	containerEventsWG sync.WaitGroup,
+	containerEventsWG *sync.WaitGroup,
 	eventStream chan dockerapi.DockerContainerChangeEvent,
 	createdContainerName chan<- string,
 	assertions func(),
 ) {
 	imageManager.EXPECT().AddAllImageStates(gomock.Any()).AnyTimes()
-	client.EXPECT().PullImage(container.Image, nil).Return(dockerapi.DockerContainerMetadata{})
+	client.EXPECT().PullImage(gomock.Any(), container.Image, nil, gomock.Any()).Return(dockerapi.DockerContainerMetadata{})
 	imageManager.EXPECT().RecordContainerReference(container).Return(nil)
 	imageManager.EXPECT().GetImageStateFromImageName(gomock.Any()).Return(nil, false)
 	client.EXPECT().APIVersion().Return(defaultDockerClientAPIVersion, nil)
@@ -169,7 +169,7 @@ func validateContainerRunWorkflow(t *testing.T,
 	dockerConfig.Labels["com.amazonaws.ecs.task-definition-version"] = task.Version
 	dockerConfig.Labels["com.amazonaws.ecs.cluster"] = ""
 	client.EXPECT().CreateContainer(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Do(
-		func(ctx interface{}, config *docker.Config, y interface{}, containerName string, z time.Duration) {
+		func(ctx interface{}, config *dockercontainer.Config, y interface{}, containerName string, z time.Duration) {
 			checkDockerConfigsExceptEnv(t, dockerConfig, config)
 			checkDockerConfigsEnv(t, dockerConfig, config)
 			// sleep5 task contains only one container. Just assign
@@ -198,7 +198,7 @@ func validateContainerRunWorkflow(t *testing.T,
 // its container config to docker config, it iterates over the container's env map and
 // append them into docker config's env slice. So the sequence for the env slice is undetermined,
 // and it needs other logic to check equality.
-func checkDockerConfigsExceptEnv(t *testing.T, expectedConfig *docker.Config, config *docker.Config) {
+func checkDockerConfigsExceptEnv(t *testing.T, expectedConfig *dockercontainer.Config, config *dockercontainer.Config) {
 	expectedConfigEnvList := expectedConfig.Env
 	configEnvList := config.Env
 	expectedConfig.Env = nil
@@ -213,7 +213,7 @@ func checkDockerConfigsExceptEnv(t *testing.T, expectedConfig *docker.Config, co
 
 // checkDockerConfigsEnv checks whether two docker configs have same list of environment
 // variables and each has same value, ignoring the order.
-func checkDockerConfigsEnv(t *testing.T, expectedConfig *docker.Config, config *docker.Config) {
+func checkDockerConfigsEnv(t *testing.T, expectedConfig *dockercontainer.Config, config *dockercontainer.Config) {
 	expectedConfigEnvList := expectedConfig.Env
 	configEnvList := config.Env
 
@@ -229,7 +229,7 @@ func addTaskToEngine(t *testing.T,
 	taskEngine TaskEngine,
 	sleepTask *apitask.Task,
 	mockTime *mock_ttime.MockTime,
-	createStartEventsReported sync.WaitGroup) {
+	createStartEventsReported *sync.WaitGroup) {
 	// steadyStateCheckWait is used to force the test to wait until the steady-state check
 	// has been invoked at least once
 	mockTime.EXPECT().Now().Return(time.Now()).AnyTimes()

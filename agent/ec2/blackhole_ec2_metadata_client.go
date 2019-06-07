@@ -37,11 +37,19 @@ func (blackholeMetadataClient) PrimaryENIMAC() (string, error) {
 	return "", errors.New("blackholed")
 }
 
+func (blackholeMetadataClient) AllENIMacs() (string, error) {
+	return "", errors.New("blackholed")
+}
+
 func (blackholeMetadataClient) VPCID(mac string) (string, error) {
 	return "", errors.New("blackholed")
 }
 
 func (blackholeMetadataClient) SubnetID(mac string) (string, error) {
+	return "", errors.New("blackholed")
+}
+
+func (blackholeMetadataClient) InstanceID() (string, error) {
 	return "", errors.New("blackholed")
 }
 
@@ -54,5 +62,17 @@ func (blackholeMetadataClient) GetDynamicData(path string) (string, error) {
 }
 
 func (blackholeMetadataClient) GetUserData() (string, error) {
+	return "", errors.New("blackholed")
+}
+
+func (blackholeMetadataClient) Region() (string, error) {
+	return "", errors.New("blackholed")
+}
+
+func (blackholeMetadataClient) PrivateIPv4Address() (string, error) {
+	return "", errors.New("blackholed")
+}
+
+func (blackholeMetadataClient) PublicIPv4Address() (string, error) {
 	return "", errors.New("blackholed")
 }

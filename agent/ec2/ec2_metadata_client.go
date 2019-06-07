@@ -30,8 +30,12 @@ const (
 	InstanceIdentityDocumentResource          = "instance-identity/document"
 	InstanceIdentityDocumentSignatureResource = "instance-identity/signature"
 	MacResource                               = "mac"
+	AllMacResource                            = "network/interfaces/macs"
 	VPCIDResourceFormat                       = "network/interfaces/macs/%s/vpc-id"
 	SubnetIDResourceFormat                    = "network/interfaces/macs/%s/subnet-id"
+	InstanceIDResource                        = "instance-id"
+	PrivateIPv4Resource                       = "local-ipv4"
+	PublicIPv4Resource                        = "public-ipv4"
 )
 
 const (
@@ -54,6 +58,7 @@ type HttpClient interface {
 	GetDynamicData(string) (string, error)
 	GetInstanceIdentityDocument() (ec2metadata.EC2InstanceIdentityDocument, error)
 	GetUserData() (string, error)
+	Region() (string, error)
 }
 
 // EC2MetadataClient is the client used to get metadata from instance metadata service
@@ -65,7 +70,12 @@ type EC2MetadataClient interface {
 	VPCID(mac string) (string, error)
 	SubnetID(mac string) (string, error)
 	PrimaryENIMAC() (string, error)
+	AllENIMacs() (string, error)
+	InstanceID() (string, error)
 	GetUserData() (string, error)
+	Region() (string, error)
+	PrivateIPv4Address() (string, error)
+	PublicIPv4Address() (string, error)
 }
 
 type ec2MetadataClientImpl struct {
@@ -132,6 +142,11 @@ func (c *ec2MetadataClientImpl) PrimaryENIMAC() (string, error) {
 	return c.client.GetMetadata(MacResource)
 }
 
+// AllENIMacs returns the mac addresses for all the network interfaces attached to the instance
+func (c *ec2MetadataClientImpl) AllENIMacs() (string, error) {
+	return c.client.GetMetadata(AllMacResource)
+}
+
 // VPCID returns the VPC id for the network interface, given
 // its mac address
 func (c *ec2MetadataClientImpl) VPCID(mac string) (string, error) {
@@ -144,7 +159,28 @@ func (c *ec2MetadataClientImpl) SubnetID(mac string) (string, error) {
 	return c.client.GetMetadata(fmt.Sprintf(SubnetIDResourceFormat, mac))
 }
 
+// InstanceID returns the id of this instance.
+func (c *ec2MetadataClientImpl) InstanceID() (string, error) {
+	return c.client.GetMetadata(InstanceIDResource)
+}
+
 // GetUserData returns the userdata that was configured for the
 func (c *ec2MetadataClientImpl) GetUserData() (string, error) {
 	return c.client.GetUserData()
+}
+
+// Region returns the region the instance is running in.
+func (c *ec2MetadataClientImpl) Region() (string, error) {
+	return c.client.Region()
+}
+
+// PublicIPv4Address returns the public IPv4 of this instance
+// if this instance has a public address
+func (c *ec2MetadataClientImpl) PublicIPv4Address() (string, error) {
+	return c.client.GetMetadata(PublicIPv4Resource)
+}
+
+// PrivateIPv4Address returns the private IPv4 of this instance
+func (c *ec2MetadataClientImpl) PrivateIPv4Address() (string, error) {
+	return c.client.GetMetadata(PrivateIPv4Resource)
 }

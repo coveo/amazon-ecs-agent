@@ -3,7 +3,6 @@
 ![Amazon ECS logo](doc/ecs.png "Amazon ECS")
 
 [![Build Status](https://travis-ci.org/aws/amazon-ecs-agent.svg?branch=master)](https://travis-ci.org/aws/amazon-ecs-agent)
-[![Build status](https://ci.appveyor.com/api/projects/status/upkhbwf2oc0srglt?svg=true)](https://ci.appveyor.com/project/AmazonECS/amazon-ecs-agent)
 
 
 The Amazon ECS Container Agent is a component of Amazon Elastic Container Service
@@ -49,6 +48,43 @@ $ docker run --name ecs-agent \
     --env=ECS_ENABLE_TASK_IAM_ROLE=true \
     --env=ECS_ENABLE_TASK_IAM_ROLE_NETWORK_HOST=true \
     amazon/amazon-ecs-agent:latest
+```
+
+### On Other Linux AMIs when awsvpc networking mode is enabled
+
+For the AWS VPC networking mode, ECS agent requires CNI plugin and dhclient to be available. ECS also needs the ecs-init to run as part of its startup.
+The following is an example of docker run configuration for running ecs-agent with Task ENI enabled
+```
+$ # Run the agent
+$ /usr/bin/docker run --name ecs-agent \
+--init \
+--restart=on-failure:10 \
+--volume=/var/run:/var/run \
+--volume=/var/log/ecs/:/log:Z \
+--volume=/var/lib/ecs/data:/data:Z \
+--volume=/etc/ecs:/etc/ecs \
+--volume=/sbin:/sbin \
+--volume=/lib:/lib \
+--volume=/lib64:/lib64 \
+--volume=/usr/lib:/usr/lib \
+--volume=/usr/lib64:/usr/lib64 \
+--volume=/proc:/host/proc \
+--volume=/sys/fs/cgroup:/sys/fs/cgroup \
+--net=host \
+--env-file=/etc/ecs/ecs.config \
+--cap-add=sys_admin \
+--cap-add=net_admin \
+--env ECS_ENABLE_TASK_ENI=true \
+--env ECS_UPDATES_ENABLED=true \
+--env ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION=1h \
+--env ECS_DATADIR=/data \
+--env ECS_ENABLE_TASK_IAM_ROLE=true \
+--env ECS_ENABLE_TASK_IAM_ROLE_NETWORK_HOST=true \
+--env ECS_LOGFILE=/log/ecs-agent.log \
+--env ECS_AVAILABLE_LOGGING_DRIVERS=["json-file","awslogs","syslog","none"] \
+--env ECS_LOGLEVEL=info \
+--detach \
+amazon/amazon-ecs-agent:latest
 ```
 
 See also the Advanced Usage section below.
@@ -104,13 +140,15 @@ additional details on each available environment variable.
 | `ECS_UPDATES_ENABLED` | &lt;true &#124; false&gt; | Whether to exit for an updater to apply updates when requested. | false | false |
 | `ECS_UPDATE_DOWNLOAD_DIR` | /cache               | Where to place update tarballs within the container. | | |
 | `ECS_DISABLE_METRICS`     | &lt;true &#124; false&gt;  | Whether to disable metrics gathering for tasks. | false | true |
+| `ECS_POLL_METRICS`     | &lt;true &#124; false&gt;  | Whether to poll or stream when gathering metrics for tasks. | false | false |
+| `ECS_POLLING_METRICS_WAIT_DURATION` | 30s | Time to wait to poll for new metrics for a task. Only used when ECS_POLL_METRICS is true  | 15s | 15s |
 | `ECS_RESERVED_MEMORY` | 32 | Memory, in MB, to reserve for use by things other than containers managed by Amazon ECS. | 0 | 0 |
 | `ECS_AVAILABLE_LOGGING_DRIVERS` | `["awslogs","fluentd","gelf","json-file","journald","logentries","splunk","syslog"]` | Which logging drivers are available on the container instance. | `["json-file","none"]` | `["json-file","none"]` |
 | `ECS_DISABLE_PRIVILEGED` | `true` | Whether launching privileged containers is disabled on the container instance. | `false` | `false` |
 | `ECS_SELINUX_CAPABLE` | `true` | Whether SELinux is available on the container instance. | `false` | `false` |
 | `ECS_APPARMOR_CAPABLE` | `true` | Whether AppArmor is available on the container instance. | `false` | `false` |
 | `ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION` | 10m | Time to wait to delete containers for a stopped task. If set to less than 1 minute, the value is ignored.  | 3h | 3h |
-| `ECS_CONTAINER_STOP_TIMEOUT` | 10m | Time to wait for the container to exit normally before being forcibly killed. | 30s | 30s |
+| `ECS_CONTAINER_STOP_TIMEOUT` | 10m | Instance scoped configuration for time to wait for the container to exit normally before being forcibly killed. | 30s | 30s |
 | `ECS_CONTAINER_START_TIMEOUT` | 10m | Timeout before giving up on starting a container. | 3m | 8m |
 | `ECS_ENABLE_TASK_IAM_ROLE` | `true` | Whether to enable IAM Roles for Tasks on the Container Instance | `false` | `false` |
 | `ECS_ENABLE_TASK_IAM_ROLE_NETWORK_HOST` | `true` | Whether to enable IAM Roles for Tasks when launched with `host` network mode on the Container Instance | `false` | `false` |
@@ -122,6 +160,7 @@ additional details on each available environment variable.
 | `ECS_IMAGE_PULL_INACTIVITY_TIMEOUT` | 1m | The time to wait after docker pulls complete waiting for extraction of a container. Useful for tuning large Windows containers. | 1m | 3m |
 | `ECS_INSTANCE_ATTRIBUTES` | `{"stack": "prod"}` | These attributes take effect only during initial registration. After the agent has joined an ECS cluster, use the PutAttributes API action to add additional attributes. For more information, see [Amazon ECS Container Agent Configuration](http://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-agent-config.html) in the Amazon ECS Developer Guide.| `{}` | `{}` |
 | `ECS_ENABLE_TASK_ENI` | `false` | Whether to enable task networking for task to be launched with its own network interface | `false` | Not applicable |
+| `ECS_ENABLE_HIGH_DENSITY_ENI` | `false` | Whether to enable high density eni feature when using task networking | `true` | Not applicable |
 | `ECS_CNI_PLUGINS_PATH` | `/ecs/cni` | The path where the cni binary file is located | `/amazon-ecs-cni-plugins` | Not applicable |
 | `ECS_AWSVPC_BLOCK_IMDS` | `true` | Whether to block access to [Instance Metadata](http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-metadata.html) for Tasks started with `awsvpc` network mode | `false` | Not applicable |
 | `ECS_AWSVPC_ADDITIONAL_LOCAL_ROUTES` | `["10.0.15.0/24"]` | In `awsvpc` network mode, traffic to these prefixes will be routed via the host bridge instead of the task ENI | `[]` | Not applicable |
@@ -129,10 +168,17 @@ additional details on each available environment variable.
 | `ECS_HOST_DATA_DIR` | `/var/lib/ecs` | The source directory on the host from which ECS_DATADIR is mounted. We use this to determine the source mount path for container metadata files in the case the ECS Agent is running as a container. We do not use this value in Windows because the ECS Agent is not running as container in Windows. | `/var/lib/ecs` | `Not used` |
 | `ECS_ENABLE_TASK_CPU_MEM_LIMIT` | `true` | Whether to enable task-level cpu and memory limits | `true` | `false` |
 | `ECS_CGROUP_PATH` | `/sys/fs/cgroup` | The root cgroup path that is expected by the ECS agent. This is the path that accessible from the agent mount. | `/sys/fs/cgroup` | Not applicable |
+| `ECS_CGROUP_CPU_PERIOD` | `10ms` | CGroups CPU period for task level limits. This value should be between 8ms to 100ms | `100ms` | Not applicable |
 | `ECS_ENABLE_CPU_UNBOUNDED_WINDOWS_WORKAROUND` | `true` | When `true`, ECS will allow CPU unbounded(CPU=`0`) tasks to run along with CPU bounded tasks in Windows. | Not applicable | `false` |
 | `ECS_TASK_METADATA_RPS_LIMIT` | `100,150` | Comma separated integer values for steady state and burst throttle limits for task metadata endpoint | `40,60` | `40,60` |
 | `ECS_SHARED_VOLUME_MATCH_FULL_CONFIG` | `true` | When `true`, ECS Agent will compare name, driver options, and labels to make sure volumes are identical. When `false`, Agent will short circuit shared volume comparison if the names match. This is the default Docker behavior. If a volume is shared across instances, this should be set to `false`. | `false` | `false`|
 | `ECS_DOCKER_PULL_INACTIVITY_TIMEOUT` | 1m | The time to wait after docker pulls complete waiting for extraction of a container. Useful for tuning large Windows containers. | 1m | 1m |
+| `ECS_CONTAINER_INSTANCE_PROPAGATE_TAGS_FROM` | `ec2_instance` | If `ec2_instance` is specified, existing tags defined on the container instance will be registered to Amazon ECS and will be discoverable using the `ListTagsForResource` API. Using this requires that the IAM role associated with the container instance have the `ec2:DescribeTags` action allowed. | `none` | `none` |
+| `ECS_CONTAINER_INSTANCE_TAGS` | `{"tag_key": "tag_val"}` | The metadata that you apply to the container instance to help you categorize and organize them. Each tag consists of a key and an optional value, both of which you define. Tag keys can have a maximum character length of 128 characters, and tag values can have a maximum length of 256 characters. If tags also exist on your container instance that are propagated using the `ECS_CONTAINER_INSTANCE_PROPAGATE_TAGS_FROM` parameter, those tags will be overwritten by the tags specified using `ECS_CONTAINER_INSTANCE_TAGS`. | `{}` | `{}` |
+| `ECS_ENABLE_UNTRACKED_IMAGE_CLEANUP` | `true` | Whether to allow the ECS agent to delete containers and images that are not part of ECS tasks. | `false` | `false` |
+| `ECS_EXCLUDE_UNTRACKED_IMAGE` | `alpine:latest` | Comma seperated list of `imageName:tag` of images that should not be deleted by the ECS agent if `ECS_ENABLE_UNTRACKED_IMAGE_CLEANUP` is enabled. | | |
+| `ECS_DISABLE_DOCKER_HEALTH_CHECK` | `false` | Whether to disable the Docker Container health check for the ECS Agent. | `false` | `false` |
+| `ECS_NVIDIA_RUNTIME` | nvidia | The Nvidia Runtime to be used to pass Nvidia GPU devices to containers. | nvidia | Not Applicable |
 
 ### Persistence
 
@@ -209,8 +255,14 @@ The following scripts are available to help develop the Amazon ECS Container Age
 Contributions and feedback are welcome! Proposals and pull requests will be considered and responded to. For more
 information, see the [CONTRIBUTING.md](https://github.com/aws/amazon-ecs-agent/blob/master/CONTRIBUTING.md) file.
 
+If you have a bug/and issue around the behavior of the ECS agent, please open it here.
+
+If you have a feature request, please open it over at the [AWS Containers Roadmap](https://github.com/aws/containers-roadmap).
+
 Amazon Web Services does not currently provide support for modified copies of this software.
 
+## Security disclosures
+If you think you’ve found a potential security issue, please do not post it in the Issues.  Instead, please follow the instructions [here](https://aws.amazon.com/security/vulnerability-reporting/) or [email AWS security directly](mailto:aws-security@amazon.com).
 
 ## License
 

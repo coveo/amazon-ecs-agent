@@ -1,4 +1,4 @@
-// Copyright 2015-2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Copyright 2015-2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"). You may
 // not use this file except in compliance with the License. A copy of the
@@ -74,6 +74,19 @@ func (mr *MockECSSDKMockRecorder) DiscoverPollEndpoint(arg0 interface{}) *gomock
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DiscoverPollEndpoint", reflect.TypeOf((*MockECSSDK)(nil).DiscoverPollEndpoint), arg0)
 }
 
+// ListTagsForResource mocks base method
+func (m *MockECSSDK) ListTagsForResource(arg0 *ecs.ListTagsForResourceInput) (*ecs.ListTagsForResourceOutput, error) {
+	ret := m.ctrl.Call(m, "ListTagsForResource", arg0)
+	ret0, _ := ret[0].(*ecs.ListTagsForResourceOutput)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListTagsForResource indicates an expected call of ListTagsForResource
+func (mr *MockECSSDKMockRecorder) ListTagsForResource(arg0 interface{}) *gomock.Call {
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListTagsForResource", reflect.TypeOf((*MockECSSDK)(nil).ListTagsForResource), arg0)
+}
+
 // RegisterContainerInstance mocks base method
 func (m *MockECSSDK) RegisterContainerInstance(arg0 *ecs.RegisterContainerInstanceInput) (*ecs.RegisterContainerInstanceOutput, error) {
 	ret := m.ctrl.Call(m, "RegisterContainerInstance", arg0)
@@ -108,6 +121,19 @@ func NewMockECSSubmitStateSDK(ctrl *gomock.Controller) *MockECSSubmitStateSDK {
 // EXPECT returns an object that allows the caller to indicate expected use
 func (m *MockECSSubmitStateSDK) EXPECT() *MockECSSubmitStateSDKMockRecorder {
 	return m.recorder
+}
+
+// SubmitAttachmentStateChanges mocks base method
+func (m *MockECSSubmitStateSDK) SubmitAttachmentStateChanges(arg0 *ecs.SubmitAttachmentStateChangesInput) (*ecs.SubmitAttachmentStateChangesOutput, error) {
+	ret := m.ctrl.Call(m, "SubmitAttachmentStateChanges", arg0)
+	ret0, _ := ret[0].(*ecs.SubmitAttachmentStateChangesOutput)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// SubmitAttachmentStateChanges indicates an expected call of SubmitAttachmentStateChanges
+func (mr *MockECSSubmitStateSDKMockRecorder) SubmitAttachmentStateChanges(arg0 interface{}) *gomock.Call {
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SubmitAttachmentStateChanges", reflect.TypeOf((*MockECSSubmitStateSDK)(nil).SubmitAttachmentStateChanges), arg0)
 }
 
 // SubmitContainerStateChange mocks base method
@@ -185,17 +211,43 @@ func (mr *MockECSClientMockRecorder) DiscoverTelemetryEndpoint(arg0 interface{})
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DiscoverTelemetryEndpoint", reflect.TypeOf((*MockECSClient)(nil).DiscoverTelemetryEndpoint), arg0)
 }
 
-// RegisterContainerInstance mocks base method
-func (m *MockECSClient) RegisterContainerInstance(arg0 string, arg1 []*ecs.Attribute) (string, error) {
-	ret := m.ctrl.Call(m, "RegisterContainerInstance", arg0, arg1)
-	ret0, _ := ret[0].(string)
+// GetResourceTags mocks base method
+func (m *MockECSClient) GetResourceTags(arg0 string) ([]*ecs.Tag, error) {
+	ret := m.ctrl.Call(m, "GetResourceTags", arg0)
+	ret0, _ := ret[0].([]*ecs.Tag)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
+// GetResourceTags indicates an expected call of GetResourceTags
+func (mr *MockECSClientMockRecorder) GetResourceTags(arg0 interface{}) *gomock.Call {
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetResourceTags", reflect.TypeOf((*MockECSClient)(nil).GetResourceTags), arg0)
+}
+
+// RegisterContainerInstance mocks base method
+func (m *MockECSClient) RegisterContainerInstance(arg0 string, arg1 []*ecs.Attribute, arg2 []*ecs.Tag, arg3 string, arg4 []*ecs.PlatformDevice) (string, string, error) {
+	ret := m.ctrl.Call(m, "RegisterContainerInstance", arg0, arg1, arg2, arg3, arg4)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(string)
+	ret2, _ := ret[2].(error)
+	return ret0, ret1, ret2
+}
+
 // RegisterContainerInstance indicates an expected call of RegisterContainerInstance
-func (mr *MockECSClientMockRecorder) RegisterContainerInstance(arg0, arg1 interface{}) *gomock.Call {
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RegisterContainerInstance", reflect.TypeOf((*MockECSClient)(nil).RegisterContainerInstance), arg0, arg1)
+func (mr *MockECSClientMockRecorder) RegisterContainerInstance(arg0, arg1, arg2, arg3, arg4 interface{}) *gomock.Call {
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RegisterContainerInstance", reflect.TypeOf((*MockECSClient)(nil).RegisterContainerInstance), arg0, arg1, arg2, arg3, arg4)
+}
+
+// SubmitAttachmentStateChange mocks base method
+func (m *MockECSClient) SubmitAttachmentStateChange(arg0 api.AttachmentStateChange) error {
+	ret := m.ctrl.Call(m, "SubmitAttachmentStateChange", arg0)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SubmitAttachmentStateChange indicates an expected call of SubmitAttachmentStateChange
+func (mr *MockECSClientMockRecorder) SubmitAttachmentStateChange(arg0 interface{}) *gomock.Call {
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SubmitAttachmentStateChange", reflect.TypeOf((*MockECSClient)(nil).SubmitAttachmentStateChange), arg0)
 }
 
 // SubmitContainerStateChange mocks base method

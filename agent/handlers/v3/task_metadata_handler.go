@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/aws/amazon-ecs-agent/agent/api"
 	"github.com/aws/amazon-ecs-agent/agent/engine/dockerstate"
 	"github.com/aws/amazon-ecs-agent/agent/handlers/utils"
 	"github.com/aws/amazon-ecs-agent/agent/handlers/v2"
@@ -30,8 +31,12 @@ const v3EndpointIDMuxName = "v3EndpointIDMuxName"
 // TaskMetadataPath specifies the relative URI path for serving task metadata.
 var TaskMetadataPath = "/v3/" + utils.ConstructMuxVar(v3EndpointIDMuxName, utils.AnythingButSlashRegEx) + "/task"
 
+// TaskWithTagsMetadataPath specifies the relative URI path for serving task metdata
+// with Container Instance and Task Tags retrieved through the ECS API
+var TaskWithTagsMetadataPath = "/v3/" + utils.ConstructMuxVar(v3EndpointIDMuxName, utils.AnythingButSlashRegEx) + "/taskWithTags"
+
 // TaskMetadataHandler returns the handler method for handling task metadata requests.
-func TaskMetadataHandler(state dockerstate.TaskEngineState, cluster string) func(http.ResponseWriter, *http.Request) {
+func TaskMetadataHandler(state dockerstate.TaskEngineState, ecsClient api.ECSClient, cluster, az, containerInstanceArn string, propagateTags bool) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		taskARN, err := getTaskARNByRequest(r, state)
 		if err != nil {
@@ -43,7 +48,29 @@ func TaskMetadataHandler(state dockerstate.TaskEngineState, cluster string) func
 
 		seelog.Infof("V3 task metadata handler: writing response for task '%s'", taskARN)
 
-		// v3 handler shares the same task metadata response format with v2 handler.
-		v2.WriteTaskMetadataResponse(w, taskARN, cluster, state)
+		taskResponse, err := v2.NewTaskResponse(taskARN, state, ecsClient, cluster, az, containerInstanceArn, propagateTags)
+		if err != nil {
+			errResponseJSON, _ := json.Marshal("Unable to generate metadata for task: '" + taskARN + "'")
+			utils.WriteJSONToResponse(w, http.StatusBadRequest, errResponseJSON, utils.RequestTypeTaskMetadata)
+			return
+		}
+		task, _ := state.TaskByArn(taskARN)
+		if task.GetTaskENI() == nil {
+			// fill in non-awsvpc network details for container responses here
+			responses := make([]v2.ContainerResponse, 0)
+			for _, containerResponse := range taskResponse.Containers {
+				networks, err := GetContainerNetworkMetadata(containerResponse.ID, state)
+				if err != nil {
+					errResponseJSON, _ := json.Marshal(err.Error())
+					utils.WriteJSONToResponse(w, http.StatusBadRequest, errResponseJSON, utils.RequestTypeContainerMetadata)
+					return
+				}
+				containerResponse.Networks = networks
+				responses = append(responses, containerResponse)
+			}
+			taskResponse.Containers = responses
+		}
+		responseJSON, _ := json.Marshal(taskResponse)
+		utils.WriteJSONToResponse(w, http.StatusOK, responseJSON, utils.RequestTypeTaskMetadata)
 	}
 }

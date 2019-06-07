@@ -13,12 +13,12 @@
 package handler
 
 import (
-	"fmt"
-
 	"context"
+	"fmt"
 
 	"github.com/aws/amazon-ecs-agent/agent/acs/model/ecsacs"
 	"github.com/aws/amazon-ecs-agent/agent/api"
+	apiappmesh "github.com/aws/amazon-ecs-agent/agent/api/appmesh"
 	apieni "github.com/aws/amazon-ecs-agent/agent/api/eni"
 	apitask "github.com/aws/amazon-ecs-agent/agent/api/task"
 	apitaskstatus "github.com/aws/amazon-ecs-agent/agent/api/task/status"
@@ -199,10 +199,10 @@ func (payloadHandler *payloadRequestHandler) addPayloadTasks(payload *ecsacs.Pay
 			// credentials id for the task as well
 			taskIAMRoleCredentials := credentials.IAMRoleCredentialsFromACS(task.RoleCredentials, credentials.ApplicationRoleType)
 			err = payloadHandler.credentialsManager.SetTaskCredentials(
-				credentials.TaskIAMRoleCredentials{
+				&(credentials.TaskIAMRoleCredentials{
 					ARN:                aws.StringValue(task.Arn),
 					IAMRoleCredentials: taskIAMRoleCredentials,
-				})
+				}))
 			if err != nil {
 				payloadHandler.handleUnrecognizedTask(task, err, payload)
 				allTasksOK = false
@@ -219,8 +219,17 @@ func (payloadHandler *payloadRequestHandler) addPayloadTasks(payload *ecsacs.Pay
 				allTasksOK = false
 				continue
 			}
-
 			apiTask.SetTaskENI(eni)
+		}
+		// Add the app mesh information to task struct
+		if task.ProxyConfiguration != nil {
+			appmesh, err := apiappmesh.AppMeshFromACS(task.ProxyConfiguration)
+			if err != nil {
+				payloadHandler.handleUnrecognizedTask(task, err, payload)
+				allTasksOK = false
+				continue
+			}
+			apiTask.SetAppMesh(appmesh)
 		}
 		if task.ExecutionRoleCredentials != nil {
 			// The payload message contains execution credentials for the task.
@@ -228,10 +237,10 @@ func (payloadHandler *payloadRequestHandler) addPayloadTasks(payload *ecsacs.Pay
 			// task executionCredentials id.
 			taskExecutionIAMRoleCredentials := credentials.IAMRoleCredentialsFromACS(task.ExecutionRoleCredentials, credentials.ExecutionRoleType)
 			err = payloadHandler.credentialsManager.SetTaskCredentials(
-				credentials.TaskIAMRoleCredentials{
+				&(credentials.TaskIAMRoleCredentials{
 					ARN:                aws.StringValue(task.Arn),
 					IAMRoleCredentials: taskExecutionIAMRoleCredentials,
-				})
+				}))
 			if err != nil {
 				payloadHandler.handleUnrecognizedTask(task, err, payload)
 				allTasksOK = false
@@ -311,12 +320,12 @@ func (payloadHandler *payloadRequestHandler) ackCredentials(messageID *string, c
 // and returns the boolean comparison result
 type skipAddTaskComparatorFunc func(apitaskstatus.TaskStatus) bool
 
-// isTaskStatusStopped returns true if the task status == STOPPTED
+// isTaskStatusStopped returns true if the task status == STOPPED
 func isTaskStatusStopped(status apitaskstatus.TaskStatus) bool {
 	return status == apitaskstatus.TaskStopped
 }
 
-// isTaskStatusNotStopped returns true if the task status != STOPPTED
+// isTaskStatusNotStopped returns true if the task status != STOPPED
 func isTaskStatusNotStopped(status apitaskstatus.TaskStatus) bool {
 	return status != apitaskstatus.TaskStopped
 }

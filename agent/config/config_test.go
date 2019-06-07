@@ -67,6 +67,25 @@ func TestBrokenEC2MetadataEndpoint(t *testing.T) {
 	assert.Zero(t, config.APIEndpoint, "Endpoint env variable not set; endpoint should be blank")
 }
 
+func TestGetRegionWithNoIID(t *testing.T) {
+	defer setTestEnv("AWS_DEFAULT_REGION", "")()
+	ctrl := gomock.NewController(t)
+	mockEc2Metadata := mock_ec2.NewMockEC2MetadataClient(ctrl)
+
+	userDataResponse := `{ "ECSAgentConfiguration":{
+		"Cluster":"arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster",
+		"APIEndpoint":"https://some-endpoint.com",
+		"NoIID":true
+	}}`
+	mockEc2Metadata.EXPECT().GetUserData().Return(userDataResponse, nil)
+	mockEc2Metadata.EXPECT().Region().Return("us-east-1", nil)
+
+	config, err := NewConfig(mockEc2Metadata)
+	assert.NoError(t, err)
+	assert.Equal(t, config.AWSRegion, "us-east-1", "Wrong region")
+	assert.Equal(t, config.APIEndpoint, "https://some-endpoint.com", "Endpoint env variable not set; endpoint should be blank")
+}
+
 func TestEnvironmentConfig(t *testing.T) {
 	defer setTestRegion()()
 	defer setTestEnv("ECS_CLUSTER", "myCluster")()
@@ -81,6 +100,7 @@ func TestEnvironmentConfig(t *testing.T) {
 	defer setTestEnv("ECS_DISABLE_PRIVILEGED", "true")()
 	defer setTestEnv("ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION", "90s")()
 	defer setTestEnv("ECS_ENABLE_TASK_IAM_ROLE", "true")()
+	defer setTestEnv("ECS_ENABLE_UNTRACKED_IMAGE_CLEANUP", "true")()
 	defer setTestEnv("ECS_ENABLE_TASK_IAM_ROLE_NETWORK_HOST", "true")()
 	defer setTestEnv("ECS_DISABLE_IMAGE_CLEANUP", "true")()
 	defer setTestEnv("ECS_IMAGE_CLEANUP_INTERVAL", "2h")()
@@ -88,13 +108,21 @@ func TestEnvironmentConfig(t *testing.T) {
 	defer setTestEnv("ECS_NUM_IMAGES_DELETE_PER_CYCLE", "2")()
 	defer setTestEnv("ECS_IMAGE_PULL_BEHAVIOR", "always")()
 	defer setTestEnv("ECS_INSTANCE_ATTRIBUTES", "{\"my_attribute\": \"testing\"}")()
+	defer setTestEnv("ECS_CONTAINER_INSTANCE_TAGS", `{"my_tag": "testing"}`)()
 	defer setTestEnv("ECS_ENABLE_TASK_ENI", "true")()
 	defer setTestEnv("ECS_TASK_METADATA_RPS_LIMIT", "1000,1100")()
 	defer setTestEnv("ECS_SHARED_VOLUME_MATCH_FULL_CONFIG", "true")()
+	defer setTestEnv("ECS_ENABLE_GPU_SUPPORT", "true")()
+	defer setTestEnv("ECS_DISABLE_TASK_METADATA_AZ", "true")()
+	defer setTestEnv("ECS_NVIDIA_RUNTIME", "nvidia")()
+	defer setTestEnv("ECS_POLL_METRICS", "true")()
+	defer setTestEnv("ECS_POLLING_METRICS_WAIT_DURATION", "10s")()
+	defer setTestEnv("ECS_CGROUP_CPU_PERIOD", "")
 	additionalLocalRoutesJSON := `["1.2.3.4/22","5.6.7.8/32"]`
 	setTestEnv("ECS_AWSVPC_ADDITIONAL_LOCAL_ROUTES", additionalLocalRoutesJSON)
 	setTestEnv("ECS_ENABLE_CONTAINER_METADATA", "true")
 	setTestEnv("ECS_HOST_DATA_DIR", "/etc/ecs/")
+	setTestEnv("ECS_CGROUP_CPU_PERIOD", "10ms")
 
 	conf, err := environmentConfig()
 	assert.NoError(t, err)
@@ -112,15 +140,19 @@ func TestEnvironmentConfig(t *testing.T) {
 	assert.True(t, conf.SELinuxCapable, "Wrong value for SELinuxCapable")
 	assert.True(t, conf.AppArmorCapable, "Wrong value for AppArmorCapable")
 	assert.True(t, conf.TaskIAMRoleEnabled, "Wrong value for TaskIAMRoleEnabled")
+	assert.True(t, conf.DeleteNonECSImagesEnabled, "Wrong value for DeleteNonECSImagesEnabled")
 	assert.True(t, conf.TaskIAMRoleEnabledForNetworkHost, "Wrong value for TaskIAMRoleEnabledForNetworkHost")
 	assert.True(t, conf.ImageCleanupDisabled, "Wrong value for ImageCleanupDisabled")
-
+	assert.True(t, conf.PollMetrics, "Wrong value for PollMetrics")
+	expectedDurationPollingMetricsWaitDuration, _ := time.ParseDuration("10s")
+	assert.Equal(t, expectedDurationPollingMetricsWaitDuration, conf.PollingMetricsWaitDuration)
 	assert.True(t, conf.TaskENIEnabled, "Wrong value for TaskNetwork")
 	assert.Equal(t, (30 * time.Minute), conf.MinimumImageDeletionAge)
 	assert.Equal(t, (2 * time.Hour), conf.ImageCleanupInterval)
 	assert.Equal(t, 2, conf.NumImagesToDeletePerCycle)
 	assert.Equal(t, ImagePullAlwaysBehavior, conf.ImagePullBehavior)
 	assert.Equal(t, "testing", conf.InstanceAttributes["my_attribute"])
+	assert.Equal(t, "testing", conf.ContainerInstanceTags["my_tag"])
 	assert.Equal(t, (90 * time.Second), conf.TaskCleanupWaitDuration)
 	serializedAdditionalLocalRoutesJSON, err := json.Marshal(conf.AWSVPCAdditionalLocalRoutes)
 	assert.NoError(t, err, "should marshal additional local routes")
@@ -130,6 +162,10 @@ func TestEnvironmentConfig(t *testing.T) {
 	assert.Equal(t, 1000, conf.TaskMetadataSteadyStateRate)
 	assert.Equal(t, 1100, conf.TaskMetadataBurstRate)
 	assert.True(t, conf.SharedVolumeMatchFullConfig, "Wrong value for SharedVolumeMatchFullConfig")
+	assert.True(t, conf.GPUSupportEnabled, "Wrong value for GPUSupportEnabled")
+	assert.Equal(t, "nvidia", conf.NvidiaRuntime)
+	assert.True(t, conf.TaskMetadataAZDisabled, "Wrong value for TaskMetadataAZDisabled")
+	assert.Equal(t, 10*time.Millisecond, conf.CgroupCPUPeriod)
 }
 
 func TestTrimWhitespaceWhenCreating(t *testing.T) {
@@ -156,10 +192,12 @@ func TestTrimWhitespace(t *testing.T) {
 
 func TestConfigBoolean(t *testing.T) {
 	defer setTestRegion()()
+	defer setTestEnv("ECS_DISABLE_DOCKER_HEALTH_CHECK", "true")()
 	defer setTestEnv("ECS_DISABLE_METRICS", "true")()
 	cfg, err := NewConfig(ec2.NewBlackholeEC2MetadataClient())
 	assert.NoError(t, err)
 	assert.True(t, cfg.DisableMetrics)
+	assert.True(t, cfg.DisableDockerHealthCheck)
 }
 
 func TestBadLoggingDriverSerialization(t *testing.T) {
@@ -177,11 +215,24 @@ func TestBadAttributesSerialization(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestBadTagsSerialization(t *testing.T) {
+	defer setTestRegion()()
+	defer setTestEnv("ECS_CONTAINER_INSTANCE_TAGS", "This is not valid JSON")()
+	_, err := environmentConfig()
+	assert.Error(t, err)
+}
+
 func TestInvalidLoggingDriver(t *testing.T) {
 	conf := DefaultConfig()
 	conf.AWSRegion = "us-west-2"
 	conf.AvailableLoggingDrivers = []dockerclient.LoggingDriver{"invalid-logging-driver"}
 	assert.Error(t, conf.validateAndOverrideBounds(), "Should be error with invalid-logging-driver")
+}
+
+func TestDefaultPollMetricsWithoutECSDataDir(t *testing.T) {
+	conf, err := environmentConfig()
+	assert.NoError(t, err)
+	assert.False(t, conf.PollMetrics)
 }
 
 func TestDefaultCheckpointWithoutECSDataDir(t *testing.T) {
@@ -293,6 +344,24 @@ func TestInvalidValueDockerPullInactivityTimeout(t *testing.T) {
 	assert.Equal(t, conf.ImagePullInactivityTimeout, defaultImagePullInactivityTimeout, "Wrong value for ImagePullInactivityTimeout")
 }
 
+func TestInvalidValueMaxPollingMetricsWaitDuration(t *testing.T) {
+	defer setTestRegion()()
+	defer setTestEnv("ECS_POLL_METRICS", "true")()
+	defer setTestEnv("ECS_POLLING_METRICS_WAIT_DURATION", "21s")()
+	conf, err := NewConfig(ec2.NewBlackholeEC2MetadataClient())
+	assert.NoError(t, err)
+	assert.Equal(t, conf.PollingMetricsWaitDuration, DefaultPollingMetricsWaitDuration, "Wrong value for PollingMetricsWaitDuration")
+}
+
+func TestInvalidValueMinPollingMetricsWaitDuration(t *testing.T) {
+	defer setTestRegion()()
+	defer setTestEnv("ECS_POLL_METRICS", "true")()
+	defer setTestEnv("ECS_POLLING_METRICS_WAIT_DURATION", "0s")()
+	conf, err := NewConfig(ec2.NewBlackholeEC2MetadataClient())
+	assert.NoError(t, err)
+	assert.Equal(t, conf.PollingMetricsWaitDuration, DefaultPollingMetricsWaitDuration, "Wrong value for PollingMetricsWaitDuration")
+}
+
 func TestInvalidFormatParseEnvVariableUint16(t *testing.T) {
 	defer setTestRegion()()
 	setTestEnv("FOO", "foo")
@@ -312,6 +381,14 @@ func TestInvalidFormatParseEnvVariableDuration(t *testing.T) {
 	setTestEnv("FOO", "foo")
 	duration := parseEnvVariableDuration("FOO")
 	assert.Zero(t, duration, "Expected 0 from parseEnvVariableDuration for invalid format")
+}
+
+func TestValidForImagesCleanupExclusion(t *testing.T) {
+	defer setTestRegion()()
+	defer setTestEnv("ECS_EXCLUDE_UNTRACKED_IMAGE", "amazonlinux:2,amazonlinux:3")()
+	imagesNotDelete := parseImageCleanupExclusionList("ECS_EXCLUDE_UNTRACKED_IMAGE")
+	expectedImages := []string{"amazonlinux:2", "amazonlinux:3", CachedImageNameAgentContainer, CachedImageNamePauseContainer}
+	assert.Equal(t, expectedImages, imagesNotDelete, "unexpected imageCleanupExclusionList")
 }
 
 func TestValidFormatParseEnvVariableDuration(t *testing.T) {
@@ -364,6 +441,14 @@ func TestTaskIAMRoleEnabled(t *testing.T) {
 	cfg, err := NewConfig(ec2.NewBlackholeEC2MetadataClient())
 	assert.NoError(t, err)
 	assert.True(t, cfg.TaskIAMRoleEnabled, "Wrong value for TaskIAMRoleEnabled")
+}
+
+func TestDeleteNonECSImagesEnabled(t *testing.T) {
+	defer setTestRegion()()
+	defer setTestEnv("ECS_ENABLE_UNTRACKED_IMAGE_CLEANUP", "true")()
+	cfg, err := NewConfig(ec2.NewBlackholeEC2MetadataClient())
+	assert.NoError(t, err)
+	assert.True(t, cfg.DeleteNonECSImagesEnabled, "Wrong value for DeleteNonECSImagesEnabled")
 }
 
 func TestTaskIAMRoleForHostNetworkEnabled(t *testing.T) {
@@ -614,6 +699,62 @@ func TestUserDataConfig(t *testing.T) {
 			assert.Equal(t, tc.expectedConfigCluster, cfg.Cluster)
 		})
 	}
+}
+
+func TestContainerInstancePropagateTagsFrom(t *testing.T) {
+	testcases := []struct {
+		name                                       string
+		envVarVal                                  string
+		expectedContainerInstancePropagateTagsFrom ContainerInstancePropagateTagsFromType
+	}{
+		{
+			name:      "none container instance propagate tags",
+			envVarVal: "none",
+			expectedContainerInstancePropagateTagsFrom: ContainerInstancePropagateTagsFromNoneType,
+		},
+		{
+			name:      "ec2_instance container instance propagate tags",
+			envVarVal: "ec2_instance",
+			expectedContainerInstancePropagateTagsFrom: ContainerInstancePropagateTagsFromEC2InstanceType,
+		},
+		{
+			name:      "invalid container instance propagate tags",
+			envVarVal: "none",
+			expectedContainerInstancePropagateTagsFrom: ContainerInstancePropagateTagsFromNoneType,
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer setTestRegion()()
+			defer setTestEnv("ECS_CONTAINER_INSTANCE_PROPAGATE_TAGS_FROM", tc.envVarVal)()
+
+			// Test the parse function only.
+			assert.Equal(t, parseContainerInstancePropagateTagsFrom(), tc.expectedContainerInstancePropagateTagsFrom,
+				"Wrong value from parseContainerInstancePropagateTagsFrom")
+
+			cfg, err := NewConfig(ec2.NewBlackholeEC2MetadataClient())
+			assert.NoError(t, err)
+			assert.Equal(t, cfg.ContainerInstancePropagateTagsFrom, tc.expectedContainerInstancePropagateTagsFrom,
+				"Wrong value for ContainerInstancePropagateTagsFrom")
+		})
+	}
+}
+
+func TestGPUSupportEnabled(t *testing.T) {
+	defer setTestRegion()()
+	defer setTestEnv("ECS_ENABLE_GPU_SUPPORT", "true")()
+	cfg, err := NewConfig(ec2.NewBlackholeEC2MetadataClient())
+	assert.NoError(t, err)
+	assert.True(t, cfg.GPUSupportEnabled, "Wrong value for GPUSupportEnabled")
+}
+
+func TestTaskMetadataAZDisabled(t *testing.T) {
+	defer setTestRegion()()
+	defer setTestEnv("ECS_DISABLE_TASK_METADATA_AZ", "true")()
+	cfg, err := NewConfig(ec2.NewBlackholeEC2MetadataClient())
+	assert.NoError(t, err)
+	assert.True(t, cfg.TaskMetadataAZDisabled, "Wrong value for TaskMetadataAZDisabled")
 }
 
 func setTestRegion() func() {

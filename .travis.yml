@@ -1,8 +1,8 @@
 language: go
+go_import_path: github.com/aws/amazon-ecs-agent
 sudo: false
 go:
-  - 1.9
-go_import_path: github.com/aws/amazon-ecs-agent
+  - 1.12
 
 script: 
 - if [ ${TRAVIS_TAG::1} = v ];

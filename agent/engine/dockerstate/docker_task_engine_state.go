@@ -73,6 +73,7 @@ type TaskEngineState interface {
 	DockerIDByV3EndpointID(v3EndpointID string) (string, bool)
 	// TaskARNByV3EndpointID returns a taskARN for a given v3 endpoint ID
 	TaskARNByV3EndpointID(v3EndpointID string) (string, bool)
+
 	json.Marshaler
 	json.Unmarshaler
 }
@@ -221,7 +222,6 @@ func (state *DockerTaskEngineState) RemoveENIAttachment(mac string) {
 	}
 	state.lock.Lock()
 	defer state.lock.Unlock()
-
 	if _, ok := state.eniAttachments[mac]; ok {
 		delete(state.eniAttachments, mac)
 	} else {

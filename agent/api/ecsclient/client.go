@@ -1,4 +1,4 @@
-// Copyright 2014-2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Copyright 2014-2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"). You may
 // not use this file except in compliance with the License. A copy of the
@@ -41,6 +41,7 @@ const (
 	pollEndpointCacheSize = 1
 	pollEndpointCacheTTL  = 20 * time.Minute
 	roundtripTimeout      = 5 * time.Second
+	azAttrName            = "ecs.availability-zone"
 )
 
 // APIECSClient implements ECSClient
@@ -107,7 +108,8 @@ func (client *APIECSClient) CreateCluster(clusterName string) (string, error) {
 // ContainerInstanceARN if successful. Supplying a non-empty container
 // instance ARN allows a container instance to update its registered
 // resources.
-func (client *APIECSClient) RegisterContainerInstance(containerInstanceArn string, attributes []*ecs.Attribute) (string, error) {
+func (client *APIECSClient) RegisterContainerInstance(containerInstanceArn string,
+	attributes []*ecs.Attribute, tags []*ecs.Tag, registrationToken string, platformDevices []*ecs.PlatformDevice) (string, string, error) {
 	clusterRef := client.config.Cluster
 	// If our clusterRef is empty, we should try to create the default
 	if clusterRef == "" {
@@ -118,21 +120,25 @@ func (client *APIECSClient) RegisterContainerInstance(containerInstanceArn strin
 		}()
 		// Attempt to register without checking existence of the cluster so we don't require
 		// excess permissions in the case where the cluster already exists and is active
-		containerInstanceArn, err := client.registerContainerInstance(clusterRef, containerInstanceArn, attributes)
+		containerInstanceArn, availabilityzone, err := client.registerContainerInstance(clusterRef, containerInstanceArn, attributes, tags, registrationToken, platformDevices)
 		if err == nil {
-			return containerInstanceArn, nil
+			return containerInstanceArn, availabilityzone, nil
 		}
-		// If trying to register fails, try to create the cluster before calling
+
+		// If trying to register fails because the default cluster doesn't exist, try to create the cluster before calling
 		// register again
-		clusterRef, err = client.CreateCluster(clusterRef)
-		if err != nil {
-			return "", err
+		if apierrors.IsClusterNotFoundError(err) {
+			clusterRef, err = client.CreateCluster(clusterRef)
+			if err != nil {
+				return "", "", err
+			}
 		}
 	}
-	return client.registerContainerInstance(clusterRef, containerInstanceArn, attributes)
+	return client.registerContainerInstance(clusterRef, containerInstanceArn, attributes, tags, registrationToken, platformDevices)
 }
 
-func (client *APIECSClient) registerContainerInstance(clusterRef string, containerInstanceArn string, attributes []*ecs.Attribute) (string, error) {
+func (client *APIECSClient) registerContainerInstance(clusterRef string, containerInstanceArn string,
+	attributes []*ecs.Attribute, tags []*ecs.Tag, registrationToken string, platformDevices []*ecs.PlatformDevice) (string, string, error) {
 	registerRequest := ecs.RegisterContainerInstanceInput{Cluster: &clusterRef}
 	var registrationAttributes []*ecs.Attribute
 	if containerInstanceArn != "" {
@@ -155,22 +161,39 @@ func (client *APIECSClient) registerContainerInstance(clusterRef string, contain
 	// Add additional attributes such as the os type
 	registrationAttributes = append(registrationAttributes, client.getAdditionalAttributes()...)
 	registerRequest.Attributes = registrationAttributes
+	if len(tags) > 0 {
+		registerRequest.Tags = tags
+	}
+	registerRequest.PlatformDevices = platformDevices
 	registerRequest = client.setInstanceIdentity(registerRequest)
 
 	resources, err := client.getResources()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	registerRequest.TotalResources = resources
+
+	registerRequest.ClientToken = &registrationToken
 	resp, err := client.standardClient.RegisterContainerInstance(&registerRequest)
 	if err != nil {
 		seelog.Errorf("Unable to register as a container instance with ECS: %v", err)
-		return "", err
+		return "", "", err
 	}
+
+	var availabilityzone = ""
+	if resp != nil {
+		for _, attr := range resp.ContainerInstance.Attributes {
+			if aws.StringValue(attr.Name) == azAttrName {
+				availabilityzone = aws.StringValue(attr.Value)
+				break
+			}
+		}
+	}
+
 	seelog.Info("Registered container instance with cluster!")
 	err = validateRegisteredAttributes(registerRequest.Attributes, resp.ContainerInstance.Attributes)
-	return aws.StringValue(resp.ContainerInstance.ContainerInstanceArn), err
+	return aws.StringValue(resp.ContainerInstance.ContainerInstanceArn), availabilityzone, err
 }
 
 func (client *APIECSClient) setInstanceIdentity(registerRequest ecs.RegisterContainerInstanceInput) ecs.RegisterContainerInstanceInput {
@@ -459,6 +482,28 @@ func (client *APIECSClient) SubmitContainerStateChange(change api.ContainerState
 	return nil
 }
 
+func (client *APIECSClient) SubmitAttachmentStateChange(change api.AttachmentStateChange) error {
+	attachmentStatus := change.Attachment.Status.String()
+
+	req := ecs.SubmitAttachmentStateChangesInput{
+		Cluster: &client.config.Cluster,
+		Attachments: []*ecs.AttachmentStateChange{
+			{
+				AttachmentArn: aws.String(change.Attachment.AttachmentARN),
+				Status:        aws.String(attachmentStatus),
+			},
+		},
+	}
+
+	_, err := client.submitStateChangeClient.SubmitAttachmentStateChanges(&req)
+	if err != nil {
+		seelog.Warnf("Could not submit attachment state change [%s]: %v", change.String(), err)
+		return err
+	}
+
+	return nil
+}
+
 func (client *APIECSClient) DiscoverPollEndpoint(containerInstanceArn string) (string, error) {
 	resp, err := client.discoverPollEndpoint(containerInstanceArn)
 	if err != nil {
@@ -503,4 +548,14 @@ func (client *APIECSClient) discoverPollEndpoint(containerInstanceArn string) (*
 	// Cache the response from ECS.
 	client.pollEndpoinCache.Set(containerInstanceArn, output)
 	return output, nil
+}
+
+func (client *APIECSClient) GetResourceTags(resourceArn string) ([]*ecs.Tag, error) {
+	output, err := client.standardClient.ListTagsForResource(&ecs.ListTagsForResourceInput{
+		ResourceArn: &resourceArn,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return output.Tags, nil
 }
