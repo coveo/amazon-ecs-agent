@@ -1,5 +1,4 @@
-#!/bin/bash
-# Copyright 2014-2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Copyright 2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"). You may
 # not use this file except in compliance with the License. A copy of the
@@ -11,11 +10,13 @@
 # on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
 # express or implied. See the License for the specific language governing
 # permissions and limitations under the License.
+FROM golang:1.12
 
-# This script sets up the GOPATH and PATH that the agent expects, as well as
-# setting any other common environment variables
-# It is expected to be 'sourced' while the CWD is the root of the repository
+WORKDIR /gopath
 
-# Include generate scripts.
-# The existing PATH should have a recent 'go' binary on it, as well as basic posix tools
-export PATH="$(pwd)/scripts/generate:${PATH}"
+COPY main.go .
+
+RUN go build -o storagestats main.go
+
+ENTRYPOINT ["./storagestats"]
+CMD [ "-sleep", "5000", "-bytecount", "8192"]
