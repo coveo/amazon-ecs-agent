@@ -4183,6 +4183,8 @@ type Container struct {
 	// this container in its task definition, then it reports health status as UNKNOWN.
 	HealthStatus *string `locationName:"healthStatus" type:"string" enum:"HealthStatus"`
 
+	ImageDigest *string `locationName:"imageDigest" type:"string"`
+
 	// The last known status of the container.
 	LastStatus *string `locationName:"lastStatus" type:"string"`
 
@@ -4199,8 +4201,7 @@ type Container struct {
 	// details about a running or stopped container.
 	Reason *string `locationName:"reason" type:"string"`
 
-	// The RuntimeID of the container
-	RuntimeID *string `locationName:"runtimeId" type:"string"`
+	RuntimeId *string `locationName:"runtimeId" type:"string"`
 
 	// The ARN of the task.
 	TaskArn *string `locationName:"taskArn" type:"string"`
@@ -4240,6 +4241,12 @@ func (s *Container) SetHealthStatus(v string) *Container {
 	return s
 }
 
+// SetImageDigest sets the ImageDigest field's value.
+func (s *Container) SetImageDigest(v string) *Container {
+	s.ImageDigest = &v
+	return s
+}
+
 // SetLastStatus sets the LastStatus field's value.
 func (s *Container) SetLastStatus(v string) *Container {
 	s.LastStatus = &v
@@ -4270,9 +4277,9 @@ func (s *Container) SetReason(v string) *Container {
 	return s
 }
 
-// SetRuntimeID sets the RuntimeID field's value.
-func (s *Container) SetRuntimeID(v string) *Container {
-	s.RuntimeID = &v
+// SetRuntimeId sets the RuntimeId field's value.
+func (s *Container) SetRuntimeId(v string) *Container {
+	s.RuntimeId = &v
 	return s
 }
 
@@ -5379,14 +5386,15 @@ type ContainerStateChange struct {
 	// exiting.
 	ExitCode *int64 `locationName:"exitCode" type:"integer"`
 
+	ImageDigest *string `locationName:"imageDigest" type:"string"`
+
 	// Any network bindings associated with the container.
 	NetworkBindings []*NetworkBinding `locationName:"networkBindings" type:"list"`
 
 	// The reason for the state change.
 	Reason *string `locationName:"reason" type:"string"`
 
-	// The docker ID of the container
-	RuntimeID *string `locationName:"runtimeId" type:"string"`
+	RuntimeId *string `locationName:"runtimeId" type:"string"`
 
 	// The status of the container.
 	Status *string `locationName:"status" type:"string"`
@@ -5414,6 +5422,12 @@ func (s *ContainerStateChange) SetExitCode(v int64) *ContainerStateChange {
 	return s
 }
 
+// SetImageDigest sets the ImageDigest field's value.
+func (s *ContainerStateChange) SetImageDigest(v string) *ContainerStateChange {
+	s.ImageDigest = &v
+	return s
+}
+
 // SetNetworkBindings sets the NetworkBindings field's value.
 func (s *ContainerStateChange) SetNetworkBindings(v []*NetworkBinding) *ContainerStateChange {
 	s.NetworkBindings = v
@@ -5426,9 +5440,9 @@ func (s *ContainerStateChange) SetReason(v string) *ContainerStateChange {
 	return s
 }
 
-// SetRuntimeID sets the RuntimeID field's value.
-func (s *ContainerStateChange) SetRuntimeID(v string) *ContainerStateChange {
-	s.RuntimeID = &v
+// SetRuntimeId sets the RuntimeId field's value.
+func (s *ContainerStateChange) SetRuntimeId(v string) *ContainerStateChange {
+	s.RuntimeId = &v
 	return s
 }
 
@@ -10737,8 +10751,7 @@ type SubmitContainerStateChangeInput struct {
 	// The reason for the state change request.
 	Reason *string `locationName:"reason" type:"string"`
 
-	// The Docker ID of the container
-	RuntimeID *string `locationName:"runtimeId" type:"string"`
+	RuntimeId *string `locationName:"runtimeId" type:"string"`
 
 	// The status of the state change request.
 	Status *string `locationName:"status" type:"string"`
@@ -10788,9 +10801,9 @@ func (s *SubmitContainerStateChangeInput) SetReason(v string) *SubmitContainerSt
 	return s
 }
 
-// SetRuntimeID sets the RuntimeID field's value.
-func (s *SubmitContainerStateChangeInput) SetRuntimeID(v string) *SubmitContainerStateChangeInput {
-	s.RuntimeID = &v
+// SetRuntimeId sets the RuntimeId field's value.
+func (s *SubmitContainerStateChangeInput) SetRuntimeId(v string) *SubmitContainerStateChangeInput {
+	s.RuntimeId = &v
 	return s
 }
 

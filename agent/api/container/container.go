@@ -110,6 +110,8 @@ type Container struct {
 	Image string
 	// ImageID is the local ID of the image used in the container
 	ImageID string
+	// ImageDigest is the sha-256 digest of the container image as pulled from the repository
+	ImageDigest string
 	// Command is the command to run in the container which is specified in the task definition
 	Command []string
 	// CPU is the cpu limitation of the container which is specified in the task definition
@@ -606,6 +608,22 @@ func (c *Container) GetRuntimeID() string {
 	return c.RuntimeID
 }
 
+// SetImageDigest sets the ImageDigest for a container
+func (c *Container) SetImageDigest(ImageDigest string) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	c.ImageDigest = ImageDigest
+}
+
+// GetImageDigest gets the ImageDigest for a container
+func (c *Container) GetImageDigest() string {
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+
+	return c.ImageDigest
+}
+
 // GetLabels gets the labels for a container
 func (c *Container) GetLabels() map[string]string {
 	c.lock.RLock()
@@ -988,6 +1006,26 @@ func (c *Container) GetLogDriver() string {
 	}
 
 	return hostConfig.LogConfig.Type
+}
+
+// GetNetworkModeFromHostConfig returns the network mode used by the container from the host config .
+func (c *Container) GetNetworkModeFromHostConfig() string {
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+
+	if c.DockerConfig.HostConfig == nil {
+		return ""
+	}
+
+	hostConfig := &dockercontainer.HostConfig{}
+	// TODO return error to differentiate between error and default mode .
+	err := json.Unmarshal([]byte(*c.DockerConfig.HostConfig), hostConfig)
+	if err != nil {
+		seelog.Warnf("Encountered error when trying to get network mode for container %s: %v", err)
+		return ""
+	}
+
+	return hostConfig.NetworkMode.NetworkName()
 }
 
 // GetHostConfig returns the container's host config.

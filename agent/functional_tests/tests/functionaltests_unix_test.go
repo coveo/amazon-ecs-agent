@@ -102,7 +102,12 @@ func TestOOMContainer(t *testing.T) {
 	RequireMinimumMemory(t, 600)
 
 	RequireDockerVersion(t, "<1.9.0,>1.9.1") // https://github.com/docker/docker/issues/18510
-	agent := RunAgent(t, nil)
+	agentOptions := &AgentOptions{
+		ExtraEnvironment: map[string]string{
+			"ECS_IMAGE_PULL_BEHAVIOR": "prefer-cached",
+		},
+	}
+	agent := RunAgent(t, agentOptions)
 	defer agent.Cleanup()
 
 	testTask, err := agent.StartTask(t, "oom-container")
@@ -116,7 +121,12 @@ func TestOOMTask(t *testing.T) {
 	// oom container task requires 500MB of memory; requires a bit more to be stable
 	RequireMinimumMemory(t, 600)
 
-	agent := RunAgent(t, nil)
+	agentOptions := &AgentOptions{
+		ExtraEnvironment: map[string]string{
+			"ECS_IMAGE_PULL_BEHAVIOR": "prefer-cached",
+		},
+	}
+	agent := RunAgent(t, agentOptions)
 	defer agent.Cleanup()
 
 	agent.RequireVersion(">=1.16.0")
@@ -1802,7 +1812,8 @@ func TestFirelensFluentd(t *testing.T) {
 		return message
 	}
 
-	testFirelens(t, "fluentd", "@type", "stdout", getLogSenderMessageFunc)
+	testFirelens(t, "fluentd", "@type", "stdout",
+		getLogSenderMessageFunc)
 }
 
 // TestFirelensFluentbit starts a task that has a log sender container and a firelens container with configuration type
@@ -1831,7 +1842,8 @@ func TestFirelensFluentbit(t *testing.T) {
 		return message
 	}
 
-	testFirelens(t, "fluentbit", "Name", "cloudwatch", getLogSenderMessageFunc)
+	testFirelens(t, "fluentbit", "Name", "cloudwatch",
+		getLogSenderMessageFunc)
 }
 
 func testFirelens(t *testing.T, firelensConfigType, secretLogOptionKey, secretLogOptionValue string,
@@ -1890,7 +1902,7 @@ func testFirelens(t *testing.T, firelensConfigType, secretLogOptionKey, secretLo
 	agent := RunAgent(t, agentOptions)
 	defer agent.Cleanup()
 
-	agent.RequireVersion(">=1.30.0")
+	agent.RequireVersion(">=1.31.0")
 
 	tdOverrides := make(map[string]string)
 	tdOverrides["$$$TEST_REGION$$$"] = *ECS.Config.Region
@@ -1923,4 +1935,5 @@ func testFirelens(t *testing.T, firelensConfigType, secretLogOptionKey, secretLo
 	assert.Equal(t, agent.Cluster, jsonBlob["ecs_cluster"])
 	assert.Equal(t, *testTask.TaskArn, jsonBlob["ecs_task_arn"])
 	assert.Contains(t, *testTask.TaskDefinitionArn, jsonBlob["ecs_task_definition"])
+	assert.Equal(t, "external_config_value", jsonBlob["external_config_key"])
 }

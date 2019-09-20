@@ -68,6 +68,7 @@ import (
 	"github.com/containernetworking/cni/pkg/types/current"
 	"github.com/docker/docker/api/types"
 	dockercontainer "github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/network"
 	"github.com/golang/mock/gomock"
 	"github.com/pborman/uuid"
 	"github.com/stretchr/testify/assert"
@@ -96,6 +97,9 @@ const (
 	egressIgnoredIP             = "169.254.169.254"
 	expectedDelaySeconds        = 10
 	expectedDelay               = expectedDelaySeconds * time.Second
+	networkBridgeIP             = "bridgeIP"
+	networkModeBridge           = "bridge"
+	networkModeAWSVPC           = "awsvpc"
 )
 
 var (
@@ -332,7 +336,7 @@ func TestTaskWithSteadyStateResourcesProvisioned(t *testing.T) {
 		client.EXPECT().APIVersion().Return(defaultDockerClientAPIVersion, nil),
 		client.EXPECT().CreateContainer(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Do(
 			func(ctx interface{}, config *dockercontainer.Config, hostConfig *dockercontainer.HostConfig, containerName string, z time.Duration) {
-				sleepTask.SetTaskENI(&apieni.ENI{
+				sleepTask.AddTaskENI(&apieni.ENI{
 					ID: "TestTaskWithSteadyStateResourcesProvisioned",
 					IPV4Addresses: []*apieni.ENIIPV4Address{
 						{
@@ -1065,7 +1069,7 @@ func TestPauseContainerHappyPath(t *testing.T) {
 	sleepContainer.TransitionDependenciesMap = make(map[apicontainerstatus.ContainerStatus]apicontainer.TransitionDependencySet)
 
 	// Add eni information to the task so the task can add dependency of pause container
-	sleepTask.SetTaskENI(&apieni.ENI{
+	sleepTask.AddTaskENI(&apieni.ENI{
 		ID:         "id",
 		MacAddress: "mac",
 		IPV4Addresses: []*apieni.ENIIPV4Address{
@@ -1181,117 +1185,58 @@ func TestPauseContainerHappyPath(t *testing.T) {
 }
 
 func TestBuildCNIConfigFromTaskContainer(t *testing.T) {
-	for _, blockIMDS := range []bool{true, false} {
-		t.Run(fmt.Sprintf("When BlockInstanceMetadata is %t", blockIMDS), func(t *testing.T) {
-			config := defaultConfig
-			config.AWSVPCBlockInstanceMetdata = blockIMDS
-			ctx, cancel := context.WithCancel(context.TODO())
-			defer cancel()
-			ctrl, dockerClient, _, taskEngine, _, _, _ := mocks(t, ctx, &config)
-			defer ctrl.Finish()
+	config := defaultConfig
+	ctx, cancel := context.WithCancel(context.TODO())
+	defer cancel()
+	ctrl, dockerClient, _, taskEngine, _, _, _ := mocks(t, ctx, &config)
+	defer ctrl.Finish()
 
-			testTask := testdata.LoadTask("sleep5")
-			testTask.SetTaskENI(&apieni.ENI{
-				ID: "TestBuildCNIConfigFromTaskContainer",
-				IPV4Addresses: []*apieni.ENIIPV4Address{
-					{
-						Primary: true,
-						Address: ipv4,
-					},
-				},
-				MacAddress: mac,
-				IPV6Addresses: []*apieni.ENIIPV6Address{
-					{
-						Address: ipv6,
-					},
-				},
-			})
-			testTask.SetAppMesh(&appmesh.AppMesh{
-				IgnoredUID:       ignoredUID,
-				ProxyIngressPort: proxyIngressPort,
-				ProxyEgressPort:  proxyEgressPort,
-				AppPorts: []string{
-					appPort,
-				},
-				EgressIgnoredIPs: []string{
-					egressIgnoredIP,
-				},
-			})
-			container := &apicontainer.Container{
-				Name: "container",
-			}
-			taskEngine.(*DockerTaskEngine).state.AddContainer(&apicontainer.DockerContainer{
-				Container:  container,
-				DockerName: dockerContainerName,
-			}, testTask)
-
-			dockerClient.EXPECT().InspectContainer(gomock.Any(), dockerContainerName, gomock.Any()).Return(&types.ContainerJSON{
-				ContainerJSONBase: &types.ContainerJSONBase{
-					ID:    containerID,
-					State: &types.ContainerState{Pid: containerPid},
-				},
-			}, nil)
-
-			cniConfig, err := taskEngine.(*DockerTaskEngine).buildCNIConfigFromTaskContainer(testTask, container)
-			assert.NoError(t, err)
-			assert.Equal(t, containerID, cniConfig.ContainerID)
-			assert.Equal(t, strconv.Itoa(containerPid), cniConfig.ContainerPID)
-			assert.Equal(t, mac, cniConfig.ID, "ID should be set to the mac of eni")
-			assert.Equal(t, mac, cniConfig.ENIMACAddress)
-			assert.Equal(t, ipv4, cniConfig.ENIIPV4Address)
-			assert.Equal(t, ipv6, cniConfig.ENIIPV6Address)
-			assert.Equal(t, ignoredUID, cniConfig.IgnoredUID)
-			assert.Equal(t, proxyIngressPort, cniConfig.ProxyIngressPort)
-			assert.Equal(t, proxyEgressPort, cniConfig.ProxyEgressPort)
-			assert.Equal(t, appPort, cniConfig.AppPorts[0])
-			assert.Equal(t, egressIgnoredIP, cniConfig.EgressIgnoredIPs[0])
-			assert.Equal(t, blockIMDS, cniConfig.BlockInstanceMetdata)
-		})
+	testTask := testdata.LoadTask("sleep5")
+	testTask.AddTaskENI(&apieni.ENI{
+		ID: "TestBuildCNIConfigFromTaskContainer",
+		IPV4Addresses: []*apieni.ENIIPV4Address{
+			{
+				Primary: true,
+				Address: ipv4,
+			},
+		},
+		MacAddress: mac,
+	})
+	testTask.SetAppMesh(&appmesh.AppMesh{
+		IgnoredUID:       ignoredUID,
+		ProxyIngressPort: proxyIngressPort,
+		ProxyEgressPort:  proxyEgressPort,
+		AppPorts: []string{
+			appPort,
+		},
+		EgressIgnoredIPs: []string{
+			egressIgnoredIP,
+		},
+	})
+	container := &apicontainer.Container{
+		Name: "container",
 	}
-}
+	taskEngine.(*DockerTaskEngine).state.AddContainer(&apicontainer.DockerContainer{
+		Container:  container,
+		DockerName: dockerContainerName,
+	}, testTask)
 
-func TestBuildTrunkCNIConfigFromTaskContainer(t *testing.T) {
-	for _, blockIMDS := range []bool{true, false} {
-		t.Run(fmt.Sprintf("When BlockInstanceMetadata is %t", blockIMDS), func(t *testing.T) {
-			config := defaultConfig
-			config.AWSVPCBlockInstanceMetdata = blockIMDS
-			ctx, cancel := context.WithCancel(context.TODO())
-			defer cancel()
-			ctrl, dockerClient, _, taskEngine, _, _, _ := mocks(t, ctx, &config)
-			defer ctrl.Finish()
+	dockerClient.EXPECT().InspectContainer(gomock.Any(), dockerContainerName, gomock.Any()).
+		Return(&types.ContainerJSON{
+			ContainerJSONBase: &types.ContainerJSONBase{
+				ID:    containerID,
+				State: &types.ContainerState{Pid: containerPid},
+			},
+		}, nil)
 
-			testTask := testdata.LoadTask("sleep5")
-			testTask.SetTaskENI(&apieni.ENI{
-				ID:                           "TestBuildCNIConfigFromTaskContainer",
-				MacAddress:                   mac,
-				InterfaceAssociationProtocol: apieni.VLANInterfaceAssociationProtocol,
-				InterfaceVlanProperties: &apieni.InterfaceVlanProperties{
-					VlanID:                   "1234",
-					TrunkInterfaceMacAddress: "macTrunk",
-				},
-			})
-			container := &apicontainer.Container{
-				Name: "container",
-			}
-			taskEngine.(*DockerTaskEngine).state.AddContainer(&apicontainer.DockerContainer{
-				Container:  container,
-				DockerName: dockerContainerName,
-			}, testTask)
-
-			dockerClient.EXPECT().InspectContainer(gomock.Any(), dockerContainerName, gomock.Any()).Return(&types.ContainerJSON{
-				ContainerJSONBase: &types.ContainerJSONBase{
-					ID:    containerID,
-					State: &types.ContainerState{Pid: containerPid},
-				},
-			}, nil)
-
-			cniConfig, err := taskEngine.(*DockerTaskEngine).buildCNIConfigFromTaskContainer(testTask, container)
-			assert.NoError(t, err)
-			assert.Equal(t, "macTrunk", cniConfig.TrunkMACAddress)
-			assert.Equal(t, "1234", cniConfig.BranchVlanID)
-			assert.Equal(t, apieni.VLANInterfaceAssociationProtocol, cniConfig.InterfaceAssociationProtocol)
-		})
-	}
+	cniConfig, err := taskEngine.(*DockerTaskEngine).buildCNIConfigFromTaskContainer(testTask, container, true)
+	assert.NoError(t, err)
+	assert.Equal(t, containerID, cniConfig.ContainerID)
+	assert.Equal(t, strconv.Itoa(containerPid), cniConfig.ContainerPID)
+	assert.Equal(t, mac, cniConfig.ID, "ID should be set to the mac of eni")
+	// We expect 3 NetworkConfig objects in the cni Config wrapper object:
+	// ENI, Bridge and Appmesh
+	require.Len(t, cniConfig.NetworkConfigs, 3)
 }
 
 func TestBuildCNIConfigFromTaskContainerInspectError(t *testing.T) {
@@ -1301,7 +1246,7 @@ func TestBuildCNIConfigFromTaskContainerInspectError(t *testing.T) {
 	defer ctrl.Finish()
 
 	testTask := testdata.LoadTask("sleep5")
-	testTask.SetTaskENI(&apieni.ENI{})
+	testTask.AddTaskENI(&apieni.ENI{})
 	testTask.SetAppMesh(&appmesh.AppMesh{})
 	container := &apicontainer.Container{
 		Name: "container",
@@ -1313,7 +1258,7 @@ func TestBuildCNIConfigFromTaskContainerInspectError(t *testing.T) {
 
 	dockerClient.EXPECT().InspectContainer(gomock.Any(), dockerContainerName, gomock.Any()).Return(nil, errors.New("error"))
 
-	_, err := taskEngine.(*DockerTaskEngine).buildCNIConfigFromTaskContainer(testTask, container)
+	_, err := taskEngine.(*DockerTaskEngine).buildCNIConfigFromTaskContainer(testTask, container, true)
 	assert.Error(t, err)
 }
 
@@ -1333,7 +1278,7 @@ func TestStopPauseContainerCleanupCalled(t *testing.T) {
 		Type: apicontainer.ContainerCNIPause,
 	}
 	testTask.Containers = append(testTask.Containers, pauseContainer)
-	testTask.SetTaskENI(&apieni.ENI{
+	testTask.AddTaskENI(&apieni.ENI{
 		ID: "TestStopPauseContainerCleanupCalled",
 		IPV4Addresses: []*apieni.ENIIPV4Address{
 			{
@@ -1407,7 +1352,7 @@ func TestStopPauseContainerCleanupDelay(t *testing.T) {
 		Type: apicontainer.ContainerCNIPause,
 	}
 	testTask.Containers = append(testTask.Containers, pauseContainer)
-	testTask.SetTaskENI(&apieni.ENI{
+	testTask.AddTaskENI(&apieni.ENI{
 		ID: "TestStopPauseContainerCleanupCalled",
 		IPV4Addresses: []*apieni.ENIIPV4Address{
 			{
@@ -2705,11 +2650,17 @@ func TestCreateContainerAddFirelensLogDriverConfig(t *testing.T) {
 	taskFamily := "logSenderTaskFamily"
 	taskVersion := "1"
 	logDriverTypeFirelens := "awsfirelens"
-	logDriverTypeOther := "other"
 	dataLogDriverPath := "/data/firelens/"
 	dataLogDriverSocketPath := "/socket/fluent.sock"
 	socketPathPrefix := "unix://"
-	getTask := func(logDriverType string) *apitask.Task {
+	networkModeBridge := "bridge"
+	networkModeAWSVPC := "awsvpc"
+	bridgeIPAddr := "bridgeIP"
+	envVarBridgeMode := "FLUENT_HOST=bridgeIP"
+	envVarPort := "FLUENT_PORT=24224"
+	envVarAWSVPCMode := "FLUENT_HOST=127.0.0.1"
+	eniIPv4Address := "10.0.0.2"
+	getTask := func(logDriverType string, networkMode string) *apitask.Task {
 		rawHostConfigInput := dockercontainer.HostConfig{
 			LogConfig: dockercontainer.LogConfig{
 				Type: logDriverType,
@@ -2734,11 +2685,74 @@ func TestCreateContainerAddFirelensLogDriverConfig(t *testing.T) {
 							return &s
 						}(),
 					},
+					NetworkModeUnsafe: networkMode,
+				},
+				{
+					Name: "test-container",
+					FirelensConfig: &apicontainer.FirelensConfig{
+						Type: "fluentd",
+					},
+					NetworkModeUnsafe: networkMode,
+					NetworkSettingsUnsafe: &types.NetworkSettings{
+						DefaultNetworkSettings: types.DefaultNetworkSettings{
+							IPAddress: bridgeIPAddr,
+						},
+					},
 				},
 			},
 		}
 	}
-
+	getTaskWithENI := func(logDriverType string, networkMode string) *apitask.Task {
+		rawHostConfigInput := dockercontainer.HostConfig{
+			LogConfig: dockercontainer.LogConfig{
+				Type: logDriverType,
+				Config: map[string]string{
+					"key1": "value1",
+					"key2": "value2",
+				},
+			},
+		}
+		rawHostConfig, err := json.Marshal(&rawHostConfigInput)
+		require.NoError(t, err)
+		return &apitask.Task{
+			Arn:     taskARN,
+			Version: taskVersion,
+			Family:  taskFamily,
+			ENIs: []*apieni.ENI{
+				{
+					IPV4Addresses: []*apieni.ENIIPV4Address{
+						{
+							Address: eniIPv4Address,
+						},
+					},
+				},
+			},
+			Containers: []*apicontainer.Container{
+				{
+					Name: taskName,
+					DockerConfig: apicontainer.DockerConfig{
+						HostConfig: func() *string {
+							s := string(rawHostConfig)
+							return &s
+						}(),
+					},
+					NetworkModeUnsafe: networkMode,
+				},
+				{
+					Name: "test-container",
+					FirelensConfig: &apicontainer.FirelensConfig{
+						Type: "fluentd",
+					},
+					NetworkModeUnsafe: networkMode,
+					NetworkSettingsUnsafe: &types.NetworkSettings{
+						DefaultNetworkSettings: types.DefaultNetworkSettings{
+							IPAddress: bridgeIPAddr,
+						},
+					},
+				},
+			},
+		}
+	}
 	testCases := []struct {
 		name                           string
 		task                           *apitask.Task
@@ -2746,22 +2760,38 @@ func TestCreateContainerAddFirelensLogDriverConfig(t *testing.T) {
 		expectedLogConfigTag           string
 		expectedLogConfigFluentAddress string
 		expectedFluentdAsyncConnect    string
+		expectedIPAddress              string
+		expectedPort                   string
 	}{
 		{
-			name:                           "test container that uses firelens log driver",
-			task:                           getTask(logDriverTypeFirelens),
+			name:                           "test container that uses firelens log driver with default mode",
+			task:                           getTask(logDriverTypeFirelens, ""),
 			expectedLogConfigType:          logDriverTypeFluentd,
 			expectedLogConfigTag:           taskName + "-firelens-" + taskID,
 			expectedFluentdAsyncConnect:    strconv.FormatBool(true),
 			expectedLogConfigFluentAddress: socketPathPrefix + filepath.Join(defaultConfig.DataDirOnHost, dataLogDriverPath, taskID, dataLogDriverSocketPath),
+			expectedIPAddress:              envVarBridgeMode,
+			expectedPort:                   envVarPort,
 		},
 		{
-			name:                           "test container that uses other log driver",
-			task:                           getTask(logDriverTypeOther),
-			expectedLogConfigType:          logDriverTypeOther,
-			expectedLogConfigTag:           "",
-			expectedLogConfigFluentAddress: "",
-			expectedFluentdAsyncConnect:    "",
+			name:                           "test container that uses firelens log driver with bridge mode",
+			task:                           getTask(logDriverTypeFirelens, networkModeBridge),
+			expectedLogConfigType:          logDriverTypeFluentd,
+			expectedLogConfigTag:           taskName + "-firelens-" + taskID,
+			expectedFluentdAsyncConnect:    strconv.FormatBool(true),
+			expectedLogConfigFluentAddress: socketPathPrefix + filepath.Join(defaultConfig.DataDirOnHost, dataLogDriverPath, taskID, dataLogDriverSocketPath),
+			expectedIPAddress:              envVarBridgeMode,
+			expectedPort:                   envVarPort,
+		},
+		{
+			name:                           "test container that uses firelens log driver with awsvpc mode",
+			task:                           getTaskWithENI(logDriverTypeFirelens, networkModeAWSVPC),
+			expectedLogConfigType:          logDriverTypeFluentd,
+			expectedLogConfigTag:           taskName + "-firelens-" + taskID,
+			expectedFluentdAsyncConnect:    strconv.FormatBool(true),
+			expectedLogConfigFluentAddress: socketPathPrefix + filepath.Join(defaultConfig.DataDirOnHost, dataLogDriverPath, taskID, dataLogDriverSocketPath),
+			expectedIPAddress:              envVarAWSVPCMode,
+			expectedPort:                   envVarPort,
 		},
 	}
 
@@ -2783,6 +2813,8 @@ func TestCreateContainerAddFirelensLogDriverConfig(t *testing.T) {
 					assert.Equal(t, tc.expectedLogConfigTag, hostConfig.LogConfig.Config["tag"])
 					assert.Equal(t, tc.expectedLogConfigFluentAddress, hostConfig.LogConfig.Config["fluentd-address"])
 					assert.Equal(t, tc.expectedFluentdAsyncConnect, hostConfig.LogConfig.Config["fluentd-async-connect"])
+					assert.Contains(t, config.Env, tc.expectedIPAddress)
+					assert.Contains(t, config.Env, tc.expectedPort)
 				})
 			ret := taskEngine.(*DockerTaskEngine).createContainer(tc.task, tc.task.Containers[0])
 			assert.NoError(t, ret.Error)
@@ -2820,4 +2852,157 @@ func TestCreateFirelensContainerSetFluentdUID(t *testing.T) {
 		})
 	ret := taskEngine.(*DockerTaskEngine).createContainer(testTask, testTask.Containers[0])
 	assert.NoError(t, ret.Error)
+}
+
+func TestGetBridgeIP(t *testing.T) {
+	networkDefaultIP := "defaultIP"
+	getNetwork := func(defaultIP string, bridgeIP string, networkMode string) *types.NetworkSettings {
+		endPoint := network.EndpointSettings{
+			IPAddress: bridgeIP,
+		}
+		return &types.NetworkSettings{
+			DefaultNetworkSettings: types.DefaultNetworkSettings{
+				IPAddress: defaultIP,
+			},
+			Networks: map[string]*network.EndpointSettings{
+				networkMode: &endPoint,
+			},
+		}
+	}
+	testCases := []struct {
+		defaultIP         string
+		bridgeIP          string
+		networkMode       string
+		expectedOk        bool
+		expectedIPAddress string
+	}{
+		{
+			defaultIP:         networkDefaultIP,
+			bridgeIP:          networkBridgeIP,
+			networkMode:       networkModeBridge,
+			expectedOk:        true,
+			expectedIPAddress: networkDefaultIP,
+		},
+		{
+			defaultIP:         "",
+			bridgeIP:          networkBridgeIP,
+			networkMode:       networkModeBridge,
+			expectedOk:        true,
+			expectedIPAddress: networkBridgeIP,
+		},
+		{
+			defaultIP:         "",
+			bridgeIP:          networkBridgeIP,
+			networkMode:       networkModeAWSVPC,
+			expectedOk:        false,
+			expectedIPAddress: "",
+		},
+		{
+			defaultIP:         "",
+			bridgeIP:          "",
+			networkMode:       networkModeBridge,
+			expectedOk:        false,
+			expectedIPAddress: "",
+		},
+	}
+
+	for _, tc := range testCases {
+		IPAddress, ok := getContainerHostIP(getNetwork(tc.defaultIP, tc.bridgeIP, tc.networkMode))
+		assert.Equal(t, tc.expectedOk, ok)
+		assert.Equal(t, tc.expectedIPAddress, IPAddress)
+	}
+}
+
+func TestStartFirelensContainerRetryForContainerIP(t *testing.T) {
+	dockerMetaDataWithoutNetworkSettings := dockerapi.DockerContainerMetadata{
+		DockerID: dockerContainerName,
+		Volumes: []types.MountPoint{
+			{
+				Name:        "volume",
+				Source:      "/src/vol",
+				Destination: "/vol",
+			},
+		},
+	}
+	rawHostConfigInput := dockercontainer.HostConfig{
+		LogConfig: dockercontainer.LogConfig{
+			Type: "fluentd",
+			Config: map[string]string{
+				"key1": "value1",
+				"key2": "value2",
+			},
+		},
+	}
+	jsonBaseWithoutNetwork := &types.ContainerJSON{
+		ContainerJSONBase: &types.ContainerJSONBase{
+			ID:    containerID,
+			State: &types.ContainerState{Pid: containerPid},
+		},
+	}
+
+	jsonBaseWithNetwork := &types.ContainerJSON{
+		ContainerJSONBase: &types.ContainerJSONBase{
+			ID:    containerID,
+			State: &types.ContainerState{Pid: containerPid},
+		},
+		NetworkSettings: &types.NetworkSettings{
+			DefaultNetworkSettings: types.DefaultNetworkSettings{
+				IPAddress: networkBridgeIP,
+			},
+			Networks: map[string]*network.EndpointSettings{
+				apitask.BridgeNetworkMode: &network.EndpointSettings{
+					IPAddress: networkBridgeIP,
+				},
+			},
+		},
+	}
+	rawHostConfig, err := json.Marshal(&rawHostConfigInput)
+	require.NoError(t, err)
+	testTask := &apitask.Task{
+		Arn:     "arn:aws:ecs:region:account-id:task/task-id",
+		Version: "1",
+		Family:  "logSenderTaskFamily",
+		Containers: []*apicontainer.Container{
+			{
+				Name: "logSenderTask",
+				DockerConfig: apicontainer.DockerConfig{
+					HostConfig: func() *string {
+						s := string(rawHostConfig)
+						return &s
+					}(),
+				},
+				NetworkModeUnsafe: apitask.BridgeNetworkMode,
+			},
+			{
+				Name: "test-container",
+				FirelensConfig: &apicontainer.FirelensConfig{
+					Type: "fluentd",
+				},
+				NetworkModeUnsafe: apitask.BridgeNetworkMode,
+			},
+		},
+	}
+	ctx, cancel := context.WithCancel(context.TODO())
+	defer cancel()
+	ctrl, client, _, taskEngine, _, _, _ := mocks(t, ctx, &defaultConfig)
+	defer ctrl.Finish()
+	taskEngine.(*DockerTaskEngine).state.AddTask(testTask)
+	taskEngine.(*DockerTaskEngine).state.AddContainer(&apicontainer.DockerContainer{
+		Container:  testTask.Containers[1],
+		DockerName: "dockerContainerName",
+	}, testTask)
+
+	client.EXPECT().APIVersion().Return(defaultDockerClientAPIVersion, nil).AnyTimes()
+	client.EXPECT().StartContainer(gomock.Any(), gomock.Any(), gomock.Any()).Return(dockerMetaDataWithoutNetworkSettings).AnyTimes()
+	gomock.InOrder(
+		client.EXPECT().InspectContainer(gomock.Any(), dockerContainerName, gomock.Any()).
+			Return(jsonBaseWithoutNetwork, nil),
+		client.EXPECT().InspectContainer(gomock.Any(), dockerContainerName, gomock.Any()).
+			Return(jsonBaseWithoutNetwork, nil),
+		client.EXPECT().InspectContainer(gomock.Any(), dockerContainerName, gomock.Any()).
+			Return(jsonBaseWithNetwork, nil),
+	)
+	ret := taskEngine.(*DockerTaskEngine).startContainer(testTask, testTask.Containers[1])
+	assert.NoError(t, ret.Error)
+	assert.Equal(t, jsonBaseWithNetwork.NetworkSettings, ret.NetworkSettings)
 }

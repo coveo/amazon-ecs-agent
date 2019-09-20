@@ -4,7 +4,7 @@
 // not use this file except in compliance with the License. A copy of the
 // License is located at
 //
-//	http://aws.amazon.com/apache2.0/
+//     http://aws.amazon.com/apache2.0/
 //
 // or in the "license" file accompanying this file. This file is distributed
 // on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
@@ -23,6 +23,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/aws/amazon-ecs-agent/agent/utils/ttime"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/arn"
+	"github.com/docker/docker/api/types"
+	"github.com/docker/go-connections/nat"
 
 	"github.com/aws/amazon-ecs-agent/agent/acs/model/ecsacs"
 	apiappmesh "github.com/aws/amazon-ecs-agent/agent/api/appmesh"
@@ -45,14 +51,10 @@ import (
 	resourcetype "github.com/aws/amazon-ecs-agent/agent/taskresource/types"
 	taskresourcevolume "github.com/aws/amazon-ecs-agent/agent/taskresource/volume"
 	"github.com/aws/amazon-ecs-agent/agent/utils"
-	"github.com/aws/amazon-ecs-agent/agent/utils/ttime"
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/arn"
 	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
 	"github.com/cihub/seelog"
-	"github.com/docker/docker/api/types"
+	"github.com/containernetworking/cni/libcni"
 	dockercontainer "github.com/docker/docker/api/types/container"
-	"github.com/docker/go-connections/nat"
 	"github.com/pkg/errors"
 )
 
@@ -96,11 +98,17 @@ const (
 	ipcModeSharable = "shareable"
 	ipcModeNone     = "none"
 
-	// firelensConfigBindFormatFluentd and firelensConfigBindFormatFluentbit specifies the format of the firelens
+	// firelensConfigBindFormatFluentd and firelensConfigBindFormatFluentbit specify the format of the firelens
 	// config file bind mount for fluentd and fluentbit firelens container respectively.
 	// First placeholder is host data dir, second placeholder is taskID.
 	firelensConfigBindFormatFluentd   = "%s/data/firelens/%s/config/fluent.conf:/fluentd/etc/fluent.conf"
 	firelensConfigBindFormatFluentbit = "%s/data/firelens/%s/config/fluent.conf:/fluent-bit/etc/fluent-bit.conf"
+
+	// firelensS3ConfigBindFormat specifies the format of the bind mount for the firelens config file downloaded from S3.
+	// First placeholder is host data dir, second placeholder is taskID, third placeholder is the s3 config path inside
+	// the firelens container.
+	firelensS3ConfigBindFormat = "%s/data/firelens/%s/config/external.conf:%s"
+
 	// firelensSocketBindFormat specifies the format for firelens container's socket directory bind mount.
 	// First placeholder is host data dir, second placeholder is taskID.
 	firelensSocketBindFormat = "%s/data/firelens/%s/socket/:/var/run/"
@@ -123,6 +131,12 @@ const (
 	awsExecutionEnvKey = "AWS_EXECUTION_ENV"
 	// ec2ExecutionEnv specifies the ec2 execution environment.
 	ec2ExecutionEnv = "AWS_ECS_EC2"
+
+	// specifies bridge type mode for a task
+	BridgeNetworkMode = "bridge"
+
+	// specifies awsvpc type mode for a task
+	AWSVPCNetworkMode = "awsvpc"
 )
 
 // TaskOverrides are the overrides applied to a task
@@ -205,8 +219,10 @@ type Task struct {
 	// used to look up the credentials for task in the credentials manager
 	credentialsID string
 
-	// ENI is the elastic network interface specified by this task
-	ENI *apieni.ENI
+	// ENIs is the list of Elastic Network Interfaces assigned to this task. The
+	// TaskENIs type is helpful when decoding state files which might have stored
+	// ENIs as a single ENI object instead of a list.
+	ENIs TaskENIs `json:"ENI"`
 
 	// AppMesh is the service mesh specified by the task
 	AppMesh *apiappmesh.AppMesh
@@ -336,9 +352,9 @@ func (task *Task) PostUnmarshalTask(cfg *config.Config,
 	// Adds necessary Pause containers for sharing PID or IPC namespaces
 	task.addNamespaceSharingProvisioningDependency(cfg)
 
-	firelensContainer := task.getFirelensContainer()
+	firelensContainer := task.GetFirelensContainer()
 	if firelensContainer != nil {
-		err = task.applyFirelensSetup(cfg, resourceFields, firelensContainer)
+		err = task.applyFirelensSetup(cfg, resourceFields, firelensContainer, credentialsManager)
 		if err != nil {
 			return err
 		}
@@ -347,8 +363,8 @@ func (task *Task) PostUnmarshalTask(cfg *config.Config,
 }
 
 func (task *Task) applyFirelensSetup(cfg *config.Config, resourceFields *taskresource.ResourceFields,
-	firelensContainer *apicontainer.Container) error {
-	err := task.initializeFirelensResource(cfg, resourceFields, firelensContainer)
+	firelensContainer *apicontainer.Container, credentialsManager credentials.Manager) error {
+	err := task.initializeFirelensResource(cfg, resourceFields, firelensContainer, credentialsManager)
 	if err != nil {
 		return apierrors.NewResourceInitError(task.Arn, err)
 	}
@@ -787,8 +803,8 @@ func (task *Task) getAllASMSecretRequirements() map[string]apicontainer.Secret {
 	return reqs
 }
 
-// getFirelensContainer returns the firelens container in the task, if there is one.
-func (task *Task) getFirelensContainer() *apicontainer.Container {
+// GetFirelensContainer returns the firelens container in the task, if there is one.
+func (task *Task) GetFirelensContainer() *apicontainer.Container {
 	for _, container := range task.Containers {
 		if container.GetFirelensConfig() != nil { // This is a firelens container.
 			return container
@@ -800,7 +816,7 @@ func (task *Task) getFirelensContainer() *apicontainer.Container {
 // initializeFirelensResource initializes the firelens task resource and adds it as a dependency of the
 // firelens container.
 func (task *Task) initializeFirelensResource(config *config.Config, resourceFields *taskresource.ResourceFields,
-	firelensContainer *apicontainer.Container) error {
+	firelensContainer *apicontainer.Container, credentialsManager credentials.Manager) error {
 	if firelensContainer.GetFirelensConfig() == nil {
 		return errors.New("firelens container config doesn't exist")
 	}
@@ -827,13 +843,20 @@ func (task *Task) initializeFirelensResource(config *config.Config, resourceFiel
 				ec2InstanceID = resourceFields.EC2InstanceID
 			}
 
-			enableECSLogMetadata := true
-			if firelensConfig.Options != nil && firelensConfig.Options["enable-ecs-log-metadata"] == "false" {
-				enableECSLogMetadata = false
+			var networkMode string
+			if task.IsNetworkModeAWSVPC() {
+				networkMode = AWSVPCNetworkMode
+			} else if container.GetNetworkModeFromHostConfig() == "" || container.GetNetworkModeFromHostConfig() == BridgeNetworkMode {
+				networkMode = BridgeNetworkMode
+			} else {
+				networkMode = container.GetNetworkModeFromHostConfig()
 			}
-
-			firelensResource = firelens.NewFirelensResource(config.Cluster, task.Arn, task.Family+":"+task.Version,
-				ec2InstanceID, config.DataDir, firelensConfig.Type, enableECSLogMetadata, containerToLogOptions)
+			firelensResource, err = firelens.NewFirelensResource(config.Cluster, task.Arn, task.Family+":"+task.Version,
+				ec2InstanceID, config.DataDir, firelensConfig.Type, config.AWSRegion, networkMode, firelensConfig.Options, containerToLogOptions,
+				credentialsManager, task.ExecutionCredentialsID)
+			if err != nil {
+				return errors.Wrap(err, "unable to initialize firelens resource")
+			}
 			task.AddResource(firelens.ResourceName, firelensResource)
 			container.BuildResourceDependency(firelensResource.GetName(), resourcestatus.ResourceCreated,
 				apicontainerstatus.ContainerCreated)
@@ -962,92 +985,106 @@ func (task *Task) collectFirelensLogEnvOptions(containerToLogOptions map[string]
 
 // AddFirelensContainerBindMounts adds config file bind mount and socket directory bind mount to the firelens
 // container's host config.
-func (task *Task) AddFirelensContainerBindMounts(firelensConfigType string, hostConfig *dockercontainer.HostConfig,
+func (task *Task) AddFirelensContainerBindMounts(firelensConfig *apicontainer.FirelensConfig, hostConfig *dockercontainer.HostConfig,
 	config *config.Config) *apierrors.HostConfigError {
 	// TODO: fix task.GetID(). It's currently incorrect when opted in task long arn format.
 	fields := strings.Split(task.Arn, "/")
 	taskID := fields[len(fields)-1]
 
-	var configBind, socketBind string
-	switch firelensConfigType {
+	var configBind, s3ConfigBind, socketBind string
+	switch firelensConfig.Type {
 	case firelens.FirelensConfigTypeFluentd:
 		configBind = fmt.Sprintf(firelensConfigBindFormatFluentd, config.DataDirOnHost, taskID)
+		s3ConfigBind = fmt.Sprintf(firelensS3ConfigBindFormat, config.DataDirOnHost, taskID, firelens.S3ConfigPathFluentd)
 	case firelens.FirelensConfigTypeFluentbit:
 		configBind = fmt.Sprintf(firelensConfigBindFormatFluentbit, config.DataDirOnHost, taskID)
+		s3ConfigBind = fmt.Sprintf(firelensS3ConfigBindFormat, config.DataDirOnHost, taskID, firelens.S3ConfigPathFluentbit)
 	default:
 		return &apierrors.HostConfigError{Msg: fmt.Sprintf("encounter invalid firelens configuration type %s",
-			firelensConfigType)}
+			firelensConfig.Type)}
 	}
 	socketBind = fmt.Sprintf(firelensSocketBindFormat, config.DataDirOnHost, taskID)
 
 	hostConfig.Binds = append(hostConfig.Binds, configBind, socketBind)
+
+	// Add the s3 config bind mount if firelens container is using a config file from S3.
+	if firelensConfig.Options != nil && firelensConfig.Options[firelens.ExternalConfigTypeOption] == firelens.ExternalConfigTypeS3 {
+		hostConfig.Binds = append(hostConfig.Binds, s3ConfigBind)
+	}
 	return nil
 }
 
-// BuildCNIConfig constructs the cni configuration from eni
-func (task *Task) BuildCNIConfig() (*ecscni.Config, error) {
-	if !task.isNetworkModeVPC() {
-		return nil, errors.New("task config: task has no ENIs associated with it, unable to generate cni config")
+// BuildCNIConfig builds a list of CNI network configurations for the task.
+// If includeIPAMConfig is set to true, the list also includes the bridge IPAM configuration.
+func (task *Task) BuildCNIConfig(includeIPAMConfig bool, cniConfig *ecscni.Config) (*ecscni.Config, error) {
+	if !task.IsNetworkModeAWSVPC() {
+		return nil, errors.New("task config: task network mode is not AWSVPC")
 	}
 
-	cfg := &ecscni.Config{}
-	convertENIToCNIConfig(task.GetTaskENI(), cfg)
-	if task.GetAppMesh() != nil {
-		convertAppMeshToCNIConfig(task.GetAppMesh(), cfg)
-	}
+	var netconf *libcni.NetworkConfig
+	var ifName string
+	var err error
 
-	return cfg, nil
-}
-
-// convertENIToCNIConfig converts input eni config into cni config
-func convertENIToCNIConfig(eni *apieni.ENI, cfg *ecscni.Config) {
-	cfg.ENIID = eni.ID
-	cfg.ID = eni.MacAddress
-	cfg.ENIMACAddress = eni.MacAddress
-	cfg.SubnetGatewayIPV4Address = eni.GetSubnetGatewayIPV4Address()
-	for _, ipv4 := range eni.IPV4Addresses {
-		if ipv4.Primary {
-			cfg.ENIIPV4Address = ipv4.Address
-			break
+	// Build a CNI network configuration for each ENI.
+	for _, eni := range task.ENIs {
+		switch eni.InterfaceAssociationProtocol {
+		// If the association protocol is set to "default" or unset (to preserve backwards
+		// compatibility), consider it a "standard" ENI attachment.
+		case "", apieni.DefaultInterfaceAssociationProtocol:
+			cniConfig.ID = eni.MacAddress
+			ifName, netconf, err = ecscni.NewENINetworkConfig(eni, cniConfig)
+		case apieni.VLANInterfaceAssociationProtocol:
+			cniConfig.ID = eni.MacAddress
+			ifName, netconf, err = ecscni.NewBranchENINetworkConfig(eni, cniConfig)
+		default:
+			err = errors.Errorf("task config: unknown interface association type: %s",
+				eni.InterfaceAssociationProtocol)
 		}
-	}
-	// If there is ipv6 assigned to eni then set it
-	if len(eni.IPV6Addresses) > 0 {
-		cfg.ENIIPV6Address = eni.IPV6Addresses[0].Address
+
+		if err != nil {
+			return nil, err
+		}
+
+		cniConfig.NetworkConfigs = append(cniConfig.NetworkConfigs, &ecscni.NetworkConfig{
+			IfName:           ifName,
+			CNINetworkConfig: netconf,
+		})
 	}
 
-	// Populate Trunk ENI fields
-	if eni.InterfaceAssociationProtocol == apieni.VLANInterfaceAssociationProtocol {
-		cfg.InterfaceAssociationProtocol = eni.InterfaceAssociationProtocol
-		cfg.TrunkMACAddress = eni.InterfaceVlanProperties.TrunkInterfaceMacAddress
-		cfg.BranchVlanID = eni.InterfaceVlanProperties.VlanID
+	// Build the bridge CNI network configuration.
+	// All AWSVPC tasks have a bridge network.
+	ifName, netconf, err = ecscni.NewBridgeNetworkConfig(cniConfig, includeIPAMConfig)
+	if err != nil {
+		return nil, err
 	}
+	cniConfig.NetworkConfigs = append(cniConfig.NetworkConfigs, &ecscni.NetworkConfig{
+		IfName:           ifName,
+		CNINetworkConfig: netconf,
+	})
+
+	// Build a CNI network configuration for AppMesh if enabled.
+	appMeshConfig := task.GetAppMesh()
+	if appMeshConfig != nil {
+		ifName, netconf, err = ecscni.NewAppMeshConfig(appMeshConfig, cniConfig)
+		if err != nil {
+			return nil, err
+		}
+		cniConfig.NetworkConfigs = append(cniConfig.NetworkConfigs, &ecscni.NetworkConfig{
+			IfName:           ifName,
+			CNINetworkConfig: netconf,
+		})
+	}
+
+	return cniConfig, nil
 }
 
-// convertAppMeshToCNIConfig converts input app mesh config into cni config
-func convertAppMeshToCNIConfig(appMesh *apiappmesh.AppMesh, cfg *ecscni.Config) {
-	cfg.AppMeshCNIEnabled = true
-	cfg.IgnoredUID = appMesh.IgnoredUID
-	cfg.IgnoredGID = appMesh.IgnoredGID
-	cfg.ProxyIngressPort = appMesh.ProxyIngressPort
-	cfg.ProxyEgressPort = appMesh.ProxyEgressPort
-	cfg.AppPorts = appMesh.AppPorts
-	cfg.EgressIgnoredIPs = appMesh.EgressIgnoredIPs
-	cfg.EgressIgnoredPorts = appMesh.EgressIgnoredPorts
-
-}
-
-// isNetworkModeVPC checks if the task is configured to use task-networking feature
-func (task *Task) isNetworkModeVPC() bool {
-	if task.GetTaskENI() == nil {
-		return false
-	}
-
-	return true
+// IsNetworkModeAWSVPC checks if the task is configured to use the AWSVPC task networking feature.
+func (task *Task) IsNetworkModeAWSVPC() bool {
+	return len(task.ENIs) > 0
 }
 
 func (task *Task) addNetworkResourceProvisioningDependency(cfg *config.Config) error {
-	if !task.isNetworkModeVPC() {
+	if !task.IsNetworkModeAWSVPC() {
 		return nil
 	}
 	pauseContainer := apicontainer.NewContainerWithSteadyState(apicontainerstatus.ContainerResourcesProvisioned)
@@ -1440,7 +1477,7 @@ func (task *Task) shouldOverrideNetworkMode(container *apicontainer.Container, d
 	// when using non docker daemon supported network modes, its existence
 	// indicates the need to configure the network mode outside of supported
 	// network drivers
-	if task.GetTaskENI() == nil {
+	if !task.IsNetworkModeAWSVPC() {
 		return false, ""
 	}
 
@@ -1472,7 +1509,7 @@ func (task *Task) shouldOverrideNetworkMode(container *apicontainer.Container, d
 // This should only be done for the pause container as other containers inherit
 // /etc/resolv.conf of this container (they share the network namespace)
 func (task *Task) overrideDNS(hostConfig *dockercontainer.HostConfig) *dockercontainer.HostConfig {
-	eni := task.GetTaskENI()
+	eni := task.GetPrimaryENI()
 	if eni == nil {
 		return hostConfig
 	}
@@ -1487,7 +1524,7 @@ func (task *Task) overrideDNS(hostConfig *dockercontainer.HostConfig) *dockercon
 // container's docker config. At the time of implmentation, we are only using it
 // to configure the pause container for awsvpc tasks
 func (task *Task) applyENIHostname(dockerConfig *dockercontainer.Config) *dockercontainer.Config {
-	eni := task.GetTaskENI()
+	eni := task.GetPrimaryENI()
 	if eni == nil {
 		return dockerConfig
 	}
@@ -1504,7 +1541,7 @@ func (task *Task) applyENIHostname(dockerConfig *dockercontainer.Config) *docker
 // generateENIExtraHosts returns a slice of strings of the form "hostname:ip"
 // that is generated using the hostname and ip addresses allocated to the ENI
 func (task *Task) generateENIExtraHosts() []string {
-	eni := task.GetTaskENI()
+	eni := task.GetPrimaryENI()
 	if eni == nil {
 		return nil
 	}
@@ -1903,20 +1940,36 @@ func (task *Task) SetSentStatus(status apitaskstatus.TaskStatus) {
 	task.SentStatusUnsafe = status
 }
 
-// SetTaskENI sets the eni information of the task
-func (task *Task) SetTaskENI(eni *apieni.ENI) {
+// AddTaskENI adds ENI information to the task.
+func (task *Task) AddTaskENI(eni *apieni.ENI) {
 	task.lock.Lock()
 	defer task.lock.Unlock()
 
-	task.ENI = eni
+	if task.ENIs == nil {
+		task.ENIs = make([]*apieni.ENI, 0)
+	}
+	task.ENIs = append(task.ENIs, eni)
 }
 
-// GetTaskENI returns the eni of task, for now task can only have one enis
-func (task *Task) GetTaskENI() *apieni.ENI {
+// GetTaskENIs returns the list of ENIs for the task.
+func (task *Task) GetTaskENIs() []*apieni.ENI {
+	// TODO: what's the point of locking if we are returning a pointer?
 	task.lock.RLock()
 	defer task.lock.RUnlock()
 
-	return task.ENI
+	return task.ENIs
+}
+
+// GetPrimaryENI returns the primary ENI of the task. Since ACS can potentially send
+// multiple ENIs to the agent, the first ENI in the list is considered as the primary ENI.
+func (task *Task) GetPrimaryENI() *apieni.ENI {
+	task.lock.RLock()
+	defer task.lock.RUnlock()
+
+	if len(task.ENIs) == 0 {
+		return nil
+	}
+	return task.ENIs[0]
 }
 
 // SetAppMesh sets the app mesh config of the task
@@ -2021,15 +2074,25 @@ func (task *Task) stringUnsafe() string {
 	res := fmt.Sprintf("%s:%s %s, TaskStatus: (%s->%s)",
 		task.Family, task.Version, task.Arn,
 		task.KnownStatusUnsafe.String(), task.DesiredStatusUnsafe.String())
+
 	res += " Containers: ["
 	for _, container := range task.Containers {
-		res += fmt.Sprintf("%s (%s->%s),", container.Name, container.GetKnownStatus().String(), container.GetDesiredStatus().String())
+		res += fmt.Sprintf("%s (%s->%s),",
+			container.Name,
+			container.GetKnownStatus().String(),
+			container.GetDesiredStatus().String())
+	}
+	res += "]"
+
+	if len(task.ENIs) > 0 {
+		res += " ENIs: ["
+		for _, eni := range task.ENIs {
+			res += fmt.Sprintf("%s,", eni.String())
+		}
+		res += "]"
 	}
 
-	if task.ENI != nil {
-		res += fmt.Sprintf(" ENI: [%s]", task.ENI.String())
-	}
-	return res + "]"
+	return res
 }
 
 // GetID is used to retrieve the taskID from taskARN

@@ -6,11 +6,15 @@
   "containerDefinitions": [
     {
       "name": "firelens",
-      "image": "fluentd:v1.4-2",
+      "image": "127.0.0.1:51670/amazon/firelens-fluentd:latest",
       "essential": true,
       "memory": 256,
       "firelensConfiguration": {
-        "type": "fluentd"
+        "type": "fluentd",
+        "options": {
+          "config-file-type": "file",
+          "config-file-value": "/tmp/local.conf"
+        }
       },
       "environment": [
         {
@@ -33,7 +37,7 @@
       "image": "busybox:latest",
       "essential": true,
       "memory": 256,
-      "command": ["sh", "-c", "echo pass; echo filtered"],
+      "command": ["sh", "-c", "sleep 5s; echo pass; echo filtered"],
       "logConfiguration": {
         "logDriver": "awsfirelens",
         "options": {

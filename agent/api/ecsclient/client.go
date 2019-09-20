@@ -37,12 +37,13 @@ import (
 )
 
 const (
-	ecsMaxReasonLength    = 255
-	ecsMaxRuntimeIDLength = 255
-	pollEndpointCacheSize = 1
-	pollEndpointCacheTTL  = 20 * time.Minute
-	roundtripTimeout      = 5 * time.Second
-	azAttrName            = "ecs.availability-zone"
+	ecsMaxImageDigestLength = 255
+	ecsMaxReasonLength      = 255
+	ecsMaxRuntimeIDLength   = 255
+	pollEndpointCacheSize   = 1
+	pollEndpointCacheTTL    = 20 * time.Minute
+	roundtripTimeout        = 5 * time.Second
+	azAttrName              = "ecs.availability-zone"
 )
 
 // APIECSClient implements ECSClient
@@ -402,11 +403,15 @@ func (client *APIECSClient) buildContainerStateChangePayload(change api.Containe
 	}
 	if change.RuntimeID != "" {
 		trimmedRuntimeID := trimString(change.RuntimeID, ecsMaxRuntimeIDLength)
-		statechange.RuntimeID = aws.String(trimmedRuntimeID)
+		statechange.RuntimeId = aws.String(trimmedRuntimeID)
 	}
 	if change.Reason != "" {
 		trimmedReason := trimString(change.Reason, ecsMaxReasonLength)
 		statechange.Reason = aws.String(trimmedReason)
+	}
+	if change.ImageDigest != "" {
+		trimmedImageDigest := trimString(change.ImageDigest, ecsMaxImageDigestLength)
+		statechange.ImageDigest = aws.String(trimmedImageDigest)
 	}
 	status := change.Status
 
@@ -449,7 +454,7 @@ func (client *APIECSClient) SubmitContainerStateChange(change api.ContainerState
 	}
 	if change.RuntimeID != "" {
 		trimmedRuntimeID := trimString(change.RuntimeID, ecsMaxRuntimeIDLength)
-		req.RuntimeID = &trimmedRuntimeID
+		req.RuntimeId = &trimmedRuntimeID
 	}
 	if change.Reason != "" {
 		trimmedReason := trimString(change.Reason, ecsMaxReasonLength)

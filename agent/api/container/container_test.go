@@ -527,6 +527,13 @@ func TestSetRuntimeIDInContainer(t *testing.T) {
 	assert.Equal(t, "asdfghjkl1234", container.GetRuntimeID())
 }
 
+func TestSetImageDigestInContainer(t *testing.T) {
+	container := Container{}
+	container.SetImageDigest("sha256:123456789")
+	assert.Equal(t, "sha256:123456789", container.ImageDigest)
+	assert.Equal(t, "sha256:123456789", container.GetImageDigest())
+}
+
 func TestDependsOnContainer(t *testing.T) {
 	testCases := []struct {
 		name          string
@@ -612,6 +619,39 @@ func TestGetLogDriver(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.logDriver, tc.container.GetLogDriver())
+		})
+	}
+}
+
+func TestGetNetworkModeFromHostConfig(t *testing.T) {
+	getContainer := func(hostConfig string) *Container {
+		c := &Container{
+			Name: "c",
+		}
+		c.DockerConfig.HostConfig = &hostConfig
+		return c
+	}
+
+	testCases := []struct {
+		name           string
+		container      *Container
+		expectedOutput string
+	}{
+		{
+			name:           "bridge mode",
+			container:      getContainer("{\"NetworkMode\":\"bridge\"}"),
+			expectedOutput: "bridge",
+		},
+		{
+			name:           "invalid case",
+			container:      getContainer("invalid"),
+			expectedOutput: "",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expectedOutput, tc.container.GetNetworkModeFromHostConfig())
 		})
 	}
 }

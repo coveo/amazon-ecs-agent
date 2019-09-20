@@ -27,7 +27,6 @@ import (
 	"github.com/aws/amazon-ecs-agent/agent/api"
 	apicontainer "github.com/aws/amazon-ecs-agent/agent/api/container"
 	apicontainerstatus "github.com/aws/amazon-ecs-agent/agent/api/container/status"
-	"github.com/aws/amazon-ecs-agent/agent/api/eni"
 	apierrors "github.com/aws/amazon-ecs-agent/agent/api/errors"
 	apitask "github.com/aws/amazon-ecs-agent/agent/api/task"
 	apitaskstatus "github.com/aws/amazon-ecs-agent/agent/api/task/status"
@@ -69,6 +68,10 @@ const (
 	labelCluster                       = labelPrefix + "cluster"
 	cniSetupTimeout                    = 1 * time.Minute
 	cniCleanupTimeout                  = 30 * time.Second
+	minGetIPBridgeTimeout              = time.Second
+	maxGetIPBridgeTimeout              = 10 * time.Second
+	getIPBridgeRetryJitterMultiplier   = 0.2
+	getIPBridgeRetryDelayMultiplier    = 2
 	ipamCleanupTmeout                  = 5 * time.Second
 	minEngineConnectRetryDelay         = 200 * time.Second
 	maxEngineConnectRetryDelay         = 2 * time.Second
@@ -86,6 +89,12 @@ const (
 
 	// fluentTagDockerFormat is the format for the log tag, which is "containerName-firelens-taskID"
 	fluentTagDockerFormat = "%s-firelens-%s"
+
+	// Environment variables are needed for firelens
+	fluentNetworkHost      = "FLUENT_HOST"
+	fluentNetworkPort      = "FLUENT_PORT"
+	FluentNetworkPortValue = "24224"
+	FluentAWSVPCHostValue  = "127.0.0.1"
 )
 
 // DockerTaskEngine is a state machine for managing a task and its containers
@@ -178,10 +187,7 @@ func NewDockerTaskEngine(cfg *config.Config,
 
 		containerChangeEventStream: containerChangeEventStream,
 		imageManager:               imageManager,
-		cniClient: ecscni.NewClient(&ecscni.Config{
-			PluginsPath:            cfg.CNIPluginsPath,
-			MinSupportedCNIVersion: config.DefaultMinSupportedCNIVersion,
-		}),
+		cniClient:                  ecscni.NewClient(cfg.CNIPluginsPath),
 
 		metadataManager:             metadataManager,
 		taskSteadyStatePollInterval: defaultTaskSteadyStatePollInterval,
@@ -515,20 +521,21 @@ func (engine *DockerTaskEngine) deleteTask(task *apitask.Task) {
 	// Now remove ourselves from the global state and cleanup channels
 	engine.tasksLock.Lock()
 	engine.state.RemoveTask(task)
-	eniTask := task.GetTaskENI()
-	if eniTask == nil {
-		seelog.Debugf("Task engine [%s]: no eni associated with task", task.Arn)
-	} else {
-		// A Trunk/Branch awsvpc task doesn't have an ENI attachment corresponds to the task's ENI,
-		// so such deletion should be skipped
-		if eniTask.InterfaceAssociationProtocol != eni.VLANInterfaceAssociationProtocol {
-			seelog.Debugf("Task engine [%s]: removing the eni from agent state", task.Arn)
-			engine.state.RemoveENIAttachment(eniTask.MacAddress)
+
+	taskENIs := task.GetTaskENIs()
+	for _, taskENI := range taskENIs {
+		// ENIs that exist only as logical associations on another interface do not have
+		// attachments that need to be removed.
+		if taskENI.IsStandardENI() {
+			seelog.Debugf("Task engine [%s]: removing eni %s from agent state",
+				task.Arn, taskENI.ID)
+			engine.state.RemoveENIAttachment(taskENI.MacAddress)
 		} else {
-			seelog.Debugf("Task engine [%s]: Not removing the eni from agent state as it is a "+
-				"branch ENI", task.Arn)
+			seelog.Debugf("Task engine [%s]: skipping removing logical eni %s from agent state",
+				task.Arn, taskENI.ID)
 		}
 	}
+
 	seelog.Infof("Task engine [%s]: finished removing task data, removing task from managed tasks", task.Arn)
 	delete(engine.managedTasks, task.Arn)
 	engine.tasksLock.Unlock()
@@ -894,7 +901,7 @@ func (engine *DockerTaskEngine) createContainer(task *apitask.Task, container *a
 
 	firelensConfig := container.GetFirelensConfig()
 	if firelensConfig != nil {
-		err := task.AddFirelensContainerBindMounts(firelensConfig.Type, hostConfig, engine.cfg)
+		err := task.AddFirelensContainerBindMounts(firelensConfig, hostConfig, engine.cfg)
 		if err != nil {
 			return dockerapi.DockerContainerMetadata{Error: apierrors.NamedError(err)}
 		}
@@ -916,9 +923,26 @@ func (engine *DockerTaskEngine) createContainer(task *apitask.Task, container *a
 	// If the container is using a special log driver type "awsfirelens", it means the container wants to use
 	// the firelens container to send logs. In this case, override the log driver type to be fluentd
 	// and specify appropriate tag and fluentd-address, so that the logs are sent to and routed by the firelens container.
-	// For reference - https://docs.docker.com/config/containers/logging/fluentd/.
+	// Update the environment variables FLUENT_HOST and FLUENT_PORT depending on the supported network modes - bridge
+	// and awsvpc. For reference - https://docs.docker.com/config/containers/logging/fluentd/.
 	if hostConfig.LogConfig.Type == logDriverTypeFirelens {
 		hostConfig.LogConfig = getFirelensLogConfig(task, container, hostConfig, engine.cfg)
+		if task.IsNetworkModeAWSVPC() {
+			container.MergeEnvironmentVariables(map[string]string{
+				fluentNetworkHost: FluentAWSVPCHostValue,
+				fluentNetworkPort: FluentNetworkPortValue,
+			})
+		} else if container.GetNetworkModeFromHostConfig() == "" || container.GetNetworkModeFromHostConfig() == apitask.BridgeNetworkMode {
+			ipAddress, ok := getContainerHostIP(task.GetFirelensContainer().GetNetworkSettings())
+			if !ok {
+				err := apierrors.DockerClientConfigError{Msg: "unable to get BridgeIP for task in bridge  mode"}
+				return dockerapi.DockerContainerMetadata{Error: apierrors.NamedError(&err)}
+			}
+			container.MergeEnvironmentVariables(map[string]string{
+				fluentNetworkHost: ipAddress,
+				fluentNetworkPort: FluentNetworkPortValue,
+			})
+		}
 	}
 
 	//Apply the log driver secret into container's LogConfig and Env secrets to container.Environment
@@ -1057,13 +1081,47 @@ func (engine *DockerTaskEngine) startContainer(task *apitask.Task, container *ap
 	}
 	seelog.Infof("Task engine [%s]: started docker container for task: %s -> %s, took %s",
 		task.Arn, container.Name, dockerContainerMD.DockerID, time.Since(startContainerBegin))
+
+	// If container is a firelens container, fluent host is needed to be added to the environment variable for the task.
+	// For the supported network mode - bridge and awsvpc, the awsvpc take the host 127.0.0.1 but in bridge mode,
+	// there is a need to wait for the IP to be present before the container using the firelens can be created.
+	if dockerContainerMD.Error == nil && container.GetFirelensConfig() != nil {
+		if !task.IsNetworkModeAWSVPC() && (container.GetNetworkModeFromHostConfig() == "" || container.GetNetworkModeFromHostConfig() == apitask.BridgeNetworkMode) {
+			_, gotContainerIP := getContainerHostIP(dockerContainerMD.NetworkSettings)
+			if !gotContainerIP {
+				getIPBridgeBackoff := retry.NewExponentialBackoff(minGetIPBridgeTimeout, maxGetIPBridgeTimeout, getIPBridgeRetryJitterMultiplier, getIPBridgeRetryDelayMultiplier)
+				contextWithTimeout, cancel := context.WithTimeout(engine.ctx, time.Minute)
+				defer cancel()
+				err := retry.RetryWithBackoffCtx(contextWithTimeout, getIPBridgeBackoff, func() error {
+					inspectOutput, err := engine.client.InspectContainer(engine.ctx, dockerContainerMD.DockerID,
+						dockerclient.InspectContainerTimeout)
+					if err != nil {
+						return err
+					}
+					_, gotIPBridge := getContainerHostIP(inspectOutput.NetworkSettings)
+					if gotIPBridge {
+						dockerContainerMD.NetworkSettings = inspectOutput.NetworkSettings
+						return nil
+					} else {
+						return errors.New("Bridge IP not available to use for firelens")
+					}
+				})
+				if err != nil {
+					return dockerapi.DockerContainerMetadata{
+						Error: dockerapi.CannotStartContainerError{FromError: err},
+					}
+				}
+			}
+
+		}
+	}
 	return dockerContainerMD
 }
 
 func (engine *DockerTaskEngine) provisionContainerResources(task *apitask.Task, container *apicontainer.Container) dockerapi.DockerContainerMetadata {
 	seelog.Infof("Task engine [%s]: setting up container resources for container [%s]",
 		task.Arn, container.Name)
-	cniConfig, err := engine.buildCNIConfigFromTaskContainer(task, container)
+	cniConfig, err := engine.buildCNIConfigFromTaskContainer(task, container, true)
 	if err != nil {
 		return dockerapi.DockerContainerMetadata{
 			Error: ContainerNetworkingError{
@@ -1101,7 +1159,7 @@ func (engine *DockerTaskEngine) cleanupPauseContainerNetwork(task *apitask.Task,
 	}
 
 	seelog.Infof("Task engine [%s]: cleaning up the network namespace", task.Arn)
-	cniConfig, err := engine.buildCNIConfigFromTaskContainer(task, container)
+	cniConfig, err := engine.buildCNIConfigFromTaskContainer(task, container, false)
 	if err != nil {
 		return errors.Wrapf(err,
 			"engine: failed cleanup task network namespace, task: %s", task.String())
@@ -1110,20 +1168,22 @@ func (engine *DockerTaskEngine) cleanupPauseContainerNetwork(task *apitask.Task,
 	return engine.cniClient.CleanupNS(engine.ctx, cniConfig, cniCleanupTimeout)
 }
 
-func (engine *DockerTaskEngine) buildCNIConfigFromTaskContainer(task *apitask.Task, container *apicontainer.Container) (*ecscni.Config, error) {
-	cfg, err := task.BuildCNIConfig()
-	if err != nil {
-		return nil, errors.Wrapf(err, "engine: build cni configuration from task failed")
+// buildCNIConfigFromTaskContainer builds a CNI config for the task and container.
+func (engine *DockerTaskEngine) buildCNIConfigFromTaskContainer(
+	task *apitask.Task,
+	container *apicontainer.Container,
+	includeIPAMConfig bool) (*ecscni.Config, error) {
+	cniConfig := &ecscni.Config{
+		BlockInstanceMetadata:  engine.cfg.AWSVPCBlockInstanceMetdata,
+		MinSupportedCNIVersion: config.DefaultMinSupportedCNIVersion,
 	}
-
 	if engine.cfg.OverrideAWSVPCLocalIPv4Address != nil &&
 		len(engine.cfg.OverrideAWSVPCLocalIPv4Address.IP) != 0 &&
 		len(engine.cfg.OverrideAWSVPCLocalIPv4Address.Mask) != 0 {
-		cfg.IPAMV4Address = engine.cfg.OverrideAWSVPCLocalIPv4Address
+		cniConfig.IPAMV4Address = engine.cfg.OverrideAWSVPCLocalIPv4Address
 	}
-
 	if len(engine.cfg.AWSVPCAdditionalLocalRoutes) != 0 {
-		cfg.AdditionalLocalRoutes = engine.cfg.AWSVPCAdditionalLocalRoutes
+		cniConfig.AdditionalLocalRoutes = engine.cfg.AWSVPCAdditionalLocalRoutes
 	}
 
 	// Get the pid of container
@@ -1145,11 +1205,15 @@ func (engine *DockerTaskEngine) buildCNIConfigFromTaskContainer(task *apitask.Ta
 		return nil, err
 	}
 
-	cfg.ContainerPID = strconv.Itoa(containerInspectOutput.State.Pid)
-	cfg.ContainerID = containerInspectOutput.ID
-	cfg.BlockInstanceMetdata = engine.cfg.AWSVPCBlockInstanceMetdata
+	cniConfig.ContainerPID = strconv.Itoa(containerInspectOutput.State.Pid)
+	cniConfig.ContainerID = containerInspectOutput.ID
 
-	return cfg, nil
+	cniConfig, err = task.BuildCNIConfig(includeIPAMConfig, cniConfig)
+	if err != nil {
+		return nil, errors.Wrapf(err, "engine: failed to build cni configuration from task")
+	}
+
+	return cniConfig, nil
 }
 
 func (engine *DockerTaskEngine) stopContainer(task *apitask.Task, container *apicontainer.Container) dockerapi.DockerContainerMetadata {
@@ -1303,4 +1367,19 @@ func (engine *DockerTaskEngine) updateMetadataFile(task *apitask.Task, cont *api
 		seelog.Debugf("Task engine [%s]: updated metadata file for container %s",
 			task.Arn, cont.Container.Name)
 	}
+}
+
+func getContainerHostIP(networkSettings *types.NetworkSettings) (string, bool) {
+	if networkSettings == nil {
+		return "", false
+	} else if networkSettings.IPAddress != "" {
+		return networkSettings.IPAddress, true
+	} else if len(networkSettings.Networks) > 0 {
+		for mode, network := range networkSettings.Networks {
+			if mode == apitask.BridgeNetworkMode && network.IPAddress != "" {
+				return network.IPAddress, true
+			}
+		}
+	}
+	return "", false
 }
