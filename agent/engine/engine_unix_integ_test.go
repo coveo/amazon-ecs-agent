@@ -78,7 +78,7 @@ const (
 
 var (
 	endpoint            = utils.DefaultIfBlank(os.Getenv(DockerEndpointEnvVariable), DockerDefaultEndpoint)
-	TestGPUInstanceType = []string{"p2", "p3", "g3"}
+	TestGPUInstanceType = []string{"p2", "p3", "g3", "g4dn"}
 )
 
 func createTestHealthCheckTask(arn string) *apitask.Task {
@@ -1314,9 +1314,9 @@ func TestSwapConfigurationTask(t *testing.T) {
 	testTask := createTestTask(testArn)
 	testTask.Containers[0].DockerConfig = apicontainer.DockerConfig{HostConfig: aws.String(`{"MemorySwap":314572800, "MemorySwappiness":90}`)}
 
-	stateChangeEvents := taskEngine.StateChangeEvents()
 	go taskEngine.AddTask(testTask)
-	verifyTaskIsRunning(stateChangeEvents, testTask)
+	verifyContainerRunningStateChange(t, taskEngine)
+	verifyTaskRunningStateChange(t, taskEngine)
 
 	ctx, cancel := context.WithCancel(context.TODO())
 	defer cancel()
@@ -1328,9 +1328,9 @@ func TestSwapConfigurationTask(t *testing.T) {
 	assert.EqualValues(t, 90, *state.HostConfig.MemorySwappiness)
 
 	// Kill the existing container now
-	taskUpdate := createTestTask(testArn)
+	taskUpdate := *testTask
 	taskUpdate.SetDesiredStatus(apitaskstatus.TaskStopped)
-	go taskEngine.AddTask(taskUpdate)
+	go taskEngine.AddTask(&taskUpdate)
 
 	verifyContainerStoppedStateChange(t, taskEngine)
 	verifyTaskStoppedStateChange(t, taskEngine)
@@ -1424,4 +1424,53 @@ func TestPerContainerStopTimeout(t *testing.T) {
 	if ttime.Since(startTime) > testDockerStopTimeout+1*time.Second {
 		t.Errorf("Container should have stopped eariler, but stopped after %v", ttime.Since(startTime))
 	}
+}
+
+func TestMemoryOverCommit(t *testing.T) {
+	taskEngine, done, _ := setupWithDefaultConfig(t)
+	defer done()
+	memoryReservation := 50
+
+	client, err := sdkClient.NewClientWithOpts(sdkClient.WithHost(endpoint), sdkClient.WithVersion(sdkclientfactory.GetDefaultVersion().String()))
+	require.NoError(t, err, "Creating go docker client failed")
+
+	testArn := "TestMemoryOverCommit"
+	testTask := createTestTask(testArn)
+
+	testTask.Containers[0].DockerConfig = apicontainer.DockerConfig{HostConfig: aws.String(`{
+	"MemoryReservation": 52428800
+}`)}
+
+	go taskEngine.AddTask(testTask)
+	verifyContainerRunningStateChange(t, taskEngine)
+	verifyTaskRunningStateChange(t, taskEngine)
+
+	ctx, cancel := context.WithCancel(context.TODO())
+	defer cancel()
+
+	containerMap, _ := taskEngine.(*DockerTaskEngine).state.ContainerMapByArn(testTask.Arn)
+	cid := containerMap[testTask.Containers[0].Name].DockerID
+	state, _ := client.ContainerInspect(ctx, cid)
+
+	assert.EqualValues(t, memoryReservation*1024*1024, state.HostConfig.MemoryReservation)
+
+	// Kill the existing container now
+	testUpdate := *testTask
+	testUpdate.SetDesiredStatus(apitaskstatus.TaskStopped)
+	go taskEngine.AddTask(&testUpdate)
+
+	verifyContainerStoppedStateChange(t, taskEngine)
+	verifyTaskStoppedStateChange(t, taskEngine)
+}
+
+// TestNetworkModeHost tests the container network can be configured
+// as bridge mode in task definition
+func TestNetworkModeHost(t *testing.T) {
+	testNetworkMode(t, "bridge")
+}
+
+// TestNetworkModeBridge tests the container network can be configured
+// as host mode in task definition
+func TestNetworkModeBridge(t *testing.T) {
+	testNetworkMode(t, "host")
 }

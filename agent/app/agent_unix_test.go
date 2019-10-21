@@ -99,13 +99,13 @@ func TestDoStartHappyPath(t *testing.T) {
 		imageManager.EXPECT().SetSaver(gomock.Any()),
 		dockerClient.EXPECT().ContainerEvents(gomock.Any()).Return(containerChangeEvents, nil),
 		state.EXPECT().AllImageStates().Return(nil),
+		state.EXPECT().AllENIAttachments().Return(nil),
 		state.EXPECT().AllTasks().Return(nil),
 	)
 
 	cfg := getTestConfig()
 	ctx, cancel := context.WithCancel(context.TODO())
 	// Cancel the context to cancel async routines
-	defer cancel()
 	agent := &ecsAgent{
 		ctx:                ctx,
 		cfg:                &cfg,
@@ -115,13 +115,20 @@ func TestDoStartHappyPath(t *testing.T) {
 		mobyPlugins:        mockMobyPlugins,
 	}
 
-	go agent.doStart(eventstream.NewEventStream("events", ctx),
-		credentialsManager, state, imageManager, client)
+	var agentW sync.WaitGroup
+	agentW.Add(1)
+	go func() {
+		agent.doStart(eventstream.NewEventStream("events", ctx),
+			credentialsManager, state, imageManager, client)
+		agentW.Done()
+	}()
 
 	// Wait for both DiscoverPollEndpointInput and DiscoverTelemetryEndpoint to be
 	// invoked. These are used as proxies to indicate that acs and tcs handlers'
 	// NewSession call has been invoked
 	discoverEndpointsInvoked.Wait()
+	cancel()
+	agentW.Wait()
 }
 
 func TestDoStartTaskENIHappyPath(t *testing.T) {
@@ -202,6 +209,7 @@ func TestDoStartTaskENIHappyPath(t *testing.T) {
 		imageManager.EXPECT().SetSaver(gomock.Any()),
 		dockerClient.EXPECT().ContainerEvents(gomock.Any()).Return(containerChangeEvents, nil),
 		state.EXPECT().AllImageStates().Return(nil),
+		state.EXPECT().AllENIAttachments().Return(nil),
 		state.EXPECT().AllTasks().Return(nil),
 	)
 
@@ -210,7 +218,6 @@ func TestDoStartTaskENIHappyPath(t *testing.T) {
 	cfg.ENITrunkingEnabled = true
 	ctx, cancel := context.WithCancel(context.TODO())
 	// Cancel the context to cancel async routines
-	defer cancel()
 	agent := &ecsAgent{
 		ctx:                ctx,
 		cfg:                &cfg,
@@ -224,13 +231,20 @@ func TestDoStartTaskENIHappyPath(t *testing.T) {
 		mobyPlugins:        mockMobyPlugins,
 	}
 
-	go agent.doStart(eventstream.NewEventStream("events", ctx),
-		credentialsManager, state, imageManager, client)
+	var agentW sync.WaitGroup
+	agentW.Add(1)
+	go func() {
+		agent.doStart(eventstream.NewEventStream("events", ctx),
+			credentialsManager, state, imageManager, client)
+		agentW.Done()
+	}()
 
 	// Wait for both DiscoverPollEndpointInput and DiscoverTelemetryEndpoint to be
 	// invoked. These are used as proxies to indicate that acs and tcs handlers'
 	// NewSession call has been invoked
 	discoverEndpointsInvoked.Wait()
+	cancel()
+	agentW.Wait()
 }
 
 func TestSetVPCSubnetHappyPath(t *testing.T) {
@@ -526,6 +540,7 @@ func TestDoStartCgroupInitHappyPath(t *testing.T) {
 		imageManager.EXPECT().SetSaver(gomock.Any()),
 		dockerClient.EXPECT().ContainerEvents(gomock.Any()).Return(containerChangeEvents, nil),
 		state.EXPECT().AllImageStates().Return(nil),
+		state.EXPECT().AllENIAttachments().Return(nil),
 		state.EXPECT().AllTasks().Return(nil),
 		client.EXPECT().DiscoverPollEndpoint(gomock.Any()).Do(func(x interface{}) {
 			// Ensures that the test waits until acs session has bee started
@@ -545,7 +560,6 @@ func TestDoStartCgroupInitHappyPath(t *testing.T) {
 	cfg := config.DefaultConfig()
 	ctx, cancel := context.WithCancel(context.TODO())
 	// Cancel the context to cancel async routines
-	defer cancel()
 	agent := &ecsAgent{
 		ctx:                ctx,
 		cfg:                &cfg,
@@ -558,14 +572,21 @@ func TestDoStartCgroupInitHappyPath(t *testing.T) {
 		},
 	}
 
-	go agent.doStart(eventstream.NewEventStream("events", ctx),
-		credentialsManager, state, imageManager, client)
+	var agentW sync.WaitGroup
+	agentW.Add(1)
+	go func() {
+		agent.doStart(eventstream.NewEventStream("events", ctx),
+			credentialsManager, state, imageManager, client)
+		agentW.Done()
+	}()
 
 	// Wait for both DiscoverPollEndpointInput and DiscoverTelemetryEndpoint to be
 	// invoked. These are used as proxies to indicate that acs and tcs handlers'
 	// NewSession call has been invoked
 
 	discoverEndpointsInvoked.Wait()
+	cancel()
+	agentW.Wait()
 }
 
 func TestDoStartCgroupInitErrorPath(t *testing.T) {
@@ -652,6 +673,7 @@ func TestDoStartGPUManagerHappyPath(t *testing.T) {
 		imageManager.EXPECT().SetSaver(gomock.Any()),
 		dockerClient.EXPECT().ContainerEvents(gomock.Any()).Return(containerChangeEvents, nil),
 		state.EXPECT().AllImageStates().Return(nil),
+		state.EXPECT().AllENIAttachments().Return(nil),
 		state.EXPECT().AllTasks().Return(nil),
 		client.EXPECT().DiscoverPollEndpoint(gomock.Any()).Do(func(x interface{}) {
 			// Ensures that the test waits until acs session has been started
@@ -672,7 +694,6 @@ func TestDoStartGPUManagerHappyPath(t *testing.T) {
 	cfg.GPUSupportEnabled = true
 	ctx, cancel := context.WithCancel(context.TODO())
 	// Cancel the context to cancel async routines
-	defer cancel()
 	agent := &ecsAgent{
 		ctx:                ctx,
 		cfg:                &cfg,
@@ -685,14 +706,21 @@ func TestDoStartGPUManagerHappyPath(t *testing.T) {
 		},
 	}
 
-	go agent.doStart(eventstream.NewEventStream("events", ctx),
-		credentialsManager, state, imageManager, client)
+	var agentW sync.WaitGroup
+	agentW.Add(1)
+	go func() {
+		agent.doStart(eventstream.NewEventStream("events", ctx),
+			credentialsManager, state, imageManager, client)
+		agentW.Done()
+	}()
 
 	// Wait for both DiscoverPollEndpointInput and DiscoverTelemetryEndpoint to be
 	// invoked. These are used as proxies to indicate that acs and tcs handlers'
 	// NewSession call has been invoked
 
 	discoverEndpointsInvoked.Wait()
+	cancel()
+	agentW.Wait()
 }
 
 func TestDoStartGPUManagerInitError(t *testing.T) {

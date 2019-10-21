@@ -346,6 +346,7 @@ func TestDoStartRegisterAvailabilityZone(t *testing.T) {
 		imageManager.EXPECT().SetSaver(gomock.Any()),
 		dockerClient.EXPECT().ContainerEvents(gomock.Any()),
 		state.EXPECT().AllImageStates().Return(nil),
+		state.EXPECT().AllENIAttachments().Return(nil),
 		state.EXPECT().AllTasks().Return(nil),
 	)
 
@@ -354,7 +355,6 @@ func TestDoStartRegisterAvailabilityZone(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.TODO())
 
 	// Cancel the context to cancel async routines
-	defer cancel()
 	agent := &ecsAgent{
 		ctx:                ctx,
 		cfg:                &cfg,
@@ -366,10 +366,17 @@ func TestDoStartRegisterAvailabilityZone(t *testing.T) {
 		ec2MetadataClient:  ec2MetadataClient,
 	}
 
-	go agent.doStart(eventstream.NewEventStream("events", ctx),
-		credentialsManager, state, imageManager, client)
+	var agentW sync.WaitGroup
+	agentW.Add(1)
+	go func() {
+		agent.doStart(eventstream.NewEventStream("events", ctx),
+			credentialsManager, state, imageManager, client)
+		agentW.Done()
+	}()
 
 	discoverEndpointsInvoked.Wait()
+	cancel()
+	agentW.Wait()
 }
 
 func TestNewTaskEngineRestoreFromCheckpointNoEC2InstanceIDToLoadHappyPath(t *testing.T) {
@@ -1180,6 +1187,87 @@ func TestGetHostPublicIPv4AddressFromEC2MetadataFailWithError(t *testing.T) {
 	ec2MetadataClient.EXPECT().PublicIPv4Address().Return("", errors.New("Unable to get IP Address"))
 
 	assert.Empty(t, agent.getHostPublicIPv4AddressFromEC2Metadata())
+}
+
+func TestSpotInstanceActionCheck_Sunny(t *testing.T) {
+	tests := []struct {
+		jsonresp string
+	}{
+		{jsonresp: `{"action": "terminate", "time": "2017-09-18T08:22:00Z"}`},
+		{jsonresp: `{"action": "hibernate", "time": "2017-09-18T08:22:00Z"}`},
+		{jsonresp: `{"action": "stop", "time": "2017-09-18T08:22:00Z"}`},
+	}
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	ec2MetadataClient := mock_ec2.NewMockEC2MetadataClient(ctrl)
+	ec2Client := mock_ec2.NewMockClient(ctrl)
+	ecsClient := mock_api.NewMockECSClient(ctrl)
+
+	for _, test := range tests {
+		myARN := "myARN"
+		agent := &ecsAgent{
+			ec2MetadataClient:    ec2MetadataClient,
+			ec2Client:            ec2Client,
+			containerInstanceARN: myARN,
+		}
+		ec2MetadataClient.EXPECT().SpotInstanceAction().Return(test.jsonresp, nil)
+		ecsClient.EXPECT().UpdateContainerInstancesState(myARN, "DRAINING").Return(nil)
+
+		assert.True(t, agent.spotInstanceDrainingPoller(ecsClient))
+	}
+}
+
+func TestSpotInstanceActionCheck_Fail(t *testing.T) {
+	tests := []struct {
+		jsonresp string
+	}{
+		{jsonresp: `{"action": "terminate" "time": "2017-09-18T08:22:00Z"}`}, // invalid json
+		{jsonresp: ``}, // empty json
+		{jsonresp: `{"action": "flip!", "time": "2017-09-18T08:22:00Z"}`}, // invalid action
+	}
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	ec2MetadataClient := mock_ec2.NewMockEC2MetadataClient(ctrl)
+	ec2Client := mock_ec2.NewMockClient(ctrl)
+	ecsClient := mock_api.NewMockECSClient(ctrl)
+
+	for _, test := range tests {
+		myARN := "myARN"
+		agent := &ecsAgent{
+			ec2MetadataClient:    ec2MetadataClient,
+			ec2Client:            ec2Client,
+			containerInstanceARN: myARN,
+		}
+		ec2MetadataClient.EXPECT().SpotInstanceAction().Return(test.jsonresp, nil)
+		// Container state should NOT be updated because the termination time field is empty.
+		ecsClient.EXPECT().UpdateContainerInstancesState(gomock.Any(), gomock.Any()).Times(0)
+
+		assert.False(t, agent.spotInstanceDrainingPoller(ecsClient))
+	}
+}
+
+func TestSpotInstanceActionCheck_NoInstanceActionYet(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	ec2MetadataClient := mock_ec2.NewMockEC2MetadataClient(ctrl)
+	ec2Client := mock_ec2.NewMockClient(ctrl)
+	ecsClient := mock_api.NewMockECSClient(ctrl)
+
+	myARN := "myARN"
+	agent := &ecsAgent{
+		ec2MetadataClient:    ec2MetadataClient,
+		ec2Client:            ec2Client,
+		containerInstanceARN: myARN,
+	}
+	ec2MetadataClient.EXPECT().SpotInstanceAction().Return("", fmt.Errorf("404"))
+
+	// Container state should NOT be updated because there is no termination time.
+	ecsClient.EXPECT().UpdateContainerInstancesState(gomock.Any(), gomock.Any()).Times(0)
+
+	assert.False(t, agent.spotInstanceDrainingPoller(ecsClient))
 }
 
 func getTestConfig() config.Config {

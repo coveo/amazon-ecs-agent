@@ -16,6 +16,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"io/ioutil"
 	"net"
 	"os"
@@ -35,7 +36,9 @@ import (
 	"github.com/aws/amazon-ecs-agent/agent/dockerclient/sdkclientfactory"
 	"github.com/aws/amazon-ecs-agent/agent/engine/dockerstate"
 	taskresourcevolume "github.com/aws/amazon-ecs-agent/agent/taskresource/volume"
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	sdkClient "github.com/docker/docker/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -474,4 +477,173 @@ func TestSharedDoNotAutoprovisionVolume(t *testing.T) {
 	assert.NoError(t, response.Error, "expect shared volume not removed")
 
 	cleanVolumes(testTask, taskEngine)
+}
+
+func TestLabels(t *testing.T) {
+	taskEngine, done, _ := setupWithDefaultConfig(t)
+	defer done()
+
+	client, err := sdkClient.NewClientWithOpts(sdkClient.WithHost(endpoint), sdkClient.WithVersion(sdkclientfactory.GetDefaultVersion().String()))
+	require.NoError(t, err, "Creating go docker client failed")
+
+	testArn := "TestLabels"
+	testTask := createTestTask(testArn)
+	testTask.Containers[0].DockerConfig = apicontainer.DockerConfig{Config: aws.String(`{
+	"Labels": {
+		"com.foo.label2": "value",
+		"label1":""
+	}}`)}
+	go taskEngine.AddTask(testTask)
+	verifyContainerRunningStateChange(t, taskEngine)
+	verifyTaskRunningStateChange(t, taskEngine)
+
+	ctx, cancel := context.WithCancel(context.TODO())
+	defer cancel()
+
+	containerMap, _ := taskEngine.(*DockerTaskEngine).state.ContainerMapByArn(testTask.Arn)
+	cid := containerMap[testTask.Containers[0].Name].DockerID
+	state, _ := client.ContainerInspect(ctx, cid)
+	assert.EqualValues(t, "value", state.Config.Labels["com.foo.label2"])
+	assert.EqualValues(t, "", state.Config.Labels["label1"])
+
+	// Kill the existing container now
+	taskUpdate := *testTask
+	taskUpdate.SetDesiredStatus(apitaskstatus.TaskStopped)
+	go taskEngine.AddTask(&taskUpdate)
+
+	verifyContainerStoppedStateChange(t, taskEngine)
+	verifyTaskStoppedStateChange(t, taskEngine)
+}
+
+func TestLogDriverOptions(t *testing.T) {
+	taskEngine, done, _ := setupWithDefaultConfig(t)
+	defer done()
+
+	client, err := sdkClient.NewClientWithOpts(sdkClient.WithHost(endpoint),
+		sdkClient.WithVersion(sdkclientfactory.GetDefaultVersion().String()))
+	require.NoError(t, err, "Creating go docker client failed")
+
+	testArn := "TestLogdriverOptions"
+	testTask := createTestTask(testArn)
+	testTask.Containers[0].DockerConfig = apicontainer.DockerConfig{HostConfig: aws.String(`{
+	"LogConfig": {
+		"Type": "json-file",
+		"Config": {
+			"max-file": "50",
+			"max-size": "50k"
+		}
+	}}`)}
+	go taskEngine.AddTask(testTask)
+	verifyContainerRunningStateChange(t, taskEngine)
+	verifyTaskRunningStateChange(t, taskEngine)
+
+	ctx, cancel := context.WithCancel(context.TODO())
+	defer cancel()
+
+	containerMap, _ := taskEngine.(*DockerTaskEngine).state.ContainerMapByArn(testTask.Arn)
+	cid := containerMap[testTask.Containers[0].Name].DockerID
+	state, _ := client.ContainerInspect(ctx, cid)
+
+	containerExpected := container.LogConfig{
+		Type:   "json-file",
+		Config: map[string]string{"max-file": "50", "max-size": "50k"},
+	}
+
+	assert.EqualValues(t, containerExpected, state.HostConfig.LogConfig)
+
+	// Kill the existing container now
+	testUpdate := *testTask
+	testUpdate.SetDesiredStatus(apitaskstatus.TaskStopped)
+	go taskEngine.AddTask(&testUpdate)
+
+	verifyContainerStoppedStateChange(t, taskEngine)
+	verifyTaskStoppedStateChange(t, taskEngine)
+}
+
+// TestNetworkModeNone tests the container network can be configured
+// as None mode in task definition
+func TestNetworkModeNone(t *testing.T) {
+	testNetworkMode(t, "none")
+}
+
+func testNetworkMode(t *testing.T, networkMode string) {
+	taskEngine, done, _ := setupWithDefaultConfig(t)
+	defer done()
+
+	client, err := sdkClient.NewClientWithOpts(sdkClient.WithHost(endpoint),
+		sdkClient.WithVersion(sdkclientfactory.GetDefaultVersion().String()))
+	require.NoError(t, err, "Creating go docker client failed")
+
+	testArn := "TestNetworkMode"
+	testTask := createTestTask(testArn)
+	testTask.Containers[0].DockerConfig = apicontainer.DockerConfig{
+		HostConfig: aws.String(fmt.Sprintf(`{"NetworkMode":"%s"}`, networkMode))}
+
+	go taskEngine.AddTask(testTask)
+	verifyContainerRunningStateChange(t, taskEngine)
+	verifyTaskRunningStateChange(t, taskEngine)
+
+	ctx, cancel := context.WithCancel(context.TODO())
+	defer cancel()
+
+	containerMap, _ := taskEngine.(*DockerTaskEngine).state.ContainerMapByArn(testTask.Arn)
+	cid := containerMap[testTask.Containers[0].Name].DockerID
+
+	state, _ := client.ContainerInspect(ctx, cid)
+	assert.NotNil(t, state.NetworkSettings, "Couldn't find the container network setting info")
+
+	var networks []string
+	for key := range state.NetworkSettings.Networks {
+		networks = append(networks, key)
+	}
+	assert.Equal(t, 1, len(networks), "found multiple networks in container config")
+	assert.Equal(t, networkMode, networks[0], "did not find the expected network mode")
+
+	// Kill the existing container now
+	taskUpdate := *testTask
+	taskUpdate.SetDesiredStatus(apitaskstatus.TaskStopped)
+	go taskEngine.AddTask(&taskUpdate)
+
+	verifyContainerStoppedStateChange(t, taskEngine)
+	verifyTaskStoppedStateChange(t, taskEngine)
+}
+
+func TestTaskCleanup(t *testing.T) {
+	os.Setenv("ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION", "40s")
+	defer os.Unsetenv("ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION")
+	taskEngine, done, _ := setupWithDefaultConfig(t)
+	defer done()
+
+	client, err := sdkClient.NewClientWithOpts(sdkClient.WithHost(endpoint), sdkClient.WithVersion(
+		sdkclientfactory.GetDefaultVersion().String()))
+	require.NoError(t, err, "Creating go docker client failed")
+
+	testArn := "TestTaskCleanup"
+	testTask := createTestTask(testArn)
+
+	go taskEngine.AddTask(testTask)
+	verifyContainerRunningStateChange(t, taskEngine)
+	verifyTaskRunningStateChange(t, taskEngine)
+
+	ctx, cancel := context.WithCancel(context.TODO())
+	defer cancel()
+
+	containerMap, _ := taskEngine.(*DockerTaskEngine).state.ContainerMapByArn(testTask.Arn)
+	cid := containerMap[testTask.Containers[0].Name].DockerID
+	_, err = client.ContainerInspect(ctx, cid)
+	assert.NoError(t, err, "Inspect should work")
+
+	testUpdate := *testTask
+	testUpdate.SetDesiredStatus(apitaskstatus.TaskStopped)
+	go taskEngine.AddTask(&testUpdate)
+	verifyContainerStoppedStateChange(t, taskEngine)
+	verifyTaskStoppedStateChange(t, taskEngine)
+
+	task, ok := taskEngine.(*DockerTaskEngine).State().TaskByArn(testArn)
+	assert.True(t, ok, "Expected task to be present still, but wasn't")
+	task.SetSentStatus(apitaskstatus.TaskStopped)   // cleanupTask waits for TaskStopped to be sent before cleaning
+	waitForTaskCleanup(t, taskEngine, testArn, 120) // 120 seconds
+
+	_, err = client.ContainerInspect(ctx, cid)
+	assert.Error(t, err, "Inspect should not work")
 }

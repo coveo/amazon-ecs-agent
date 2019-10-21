@@ -19,7 +19,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -29,7 +28,6 @@ import (
 	"github.com/aws/amazon-ecs-agent/agent/ec2"
 	ecsapi "github.com/aws/amazon-ecs-agent/agent/ecs_client/model/ecs"
 	. "github.com/aws/amazon-ecs-agent/agent/functional_tests/util"
-
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -49,6 +47,12 @@ const (
 	waitMinimalMetricsInCloudwatchDuration = 5 * time.Minute
 	waitBusyMetricsInCloudwatchDuration    = 10 * time.Minute
 	awslogsLogGroupName                    = "ecs-functional-tests"
+
+	// Even when the test cluster is deleted, TACS could still post cluster
+	// metrics to CW due to eventual consistency for upto a maximum of 2 minutes.
+	// While doing this, it would recreate log groups even after their manual deletion.
+	// Hence, the wait before deleting the tests' log groups.
+	waitTimeBeforeDeletingCILogGroups = 2 * time.Minute
 
 	// 'awsvpc' test parameters
 	awsvpcTaskDefinition     = "nginx-awsvpc"
@@ -183,168 +187,6 @@ func TestPortResourceContention(t *testing.T) {
 
 	go testTask.WaitStopped(2 * time.Minute)
 	testTask2.WaitStopped(2 * time.Minute)
-}
-
-func TestLabels(t *testing.T) {
-	ctx := context.TODO()
-	agent := RunAgent(t, nil)
-	defer agent.Cleanup()
-	agent.RequireVersion(">=1.5.0")
-
-	task, err := agent.StartTask(t, labelsTaskDefinition)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = task.WaitStopped(2 * time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dockerId, err := agent.ResolveTaskDockerID(task, "labeled")
-	if err != nil {
-		t.Fatal(err)
-	}
-	container, err := agent.DockerClient.ContainerInspect(ctx, dockerId)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if container.Config.Labels["label1"] != "" || container.Config.Labels["com.foo.label2"] != "value" {
-		t.Fatalf("Labels did not match expected; expected to contain label1: com.foo.label2:value, got %v", container.Config.Labels)
-	}
-}
-
-func TestLogdriverOptions(t *testing.T) {
-	ctx := context.TODO()
-	agent := RunAgent(t, nil)
-	defer agent.Cleanup()
-	agent.RequireVersion(">=1.5.0")
-
-	task, err := agent.StartTask(t, logDriverTaskDefinition)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = task.WaitStopped(2 * time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dockerId, err := agent.ResolveTaskDockerID(task, "exit")
-	if err != nil {
-		t.Fatal(err)
-	}
-	container, err := agent.DockerClient.ContainerInspect(ctx, dockerId)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if container.HostConfig.LogConfig.Type != "json-file" {
-		t.Errorf("Expected json-file type logconfig, was %v", container.HostConfig.LogConfig.Type)
-	}
-	if !reflect.DeepEqual(map[string]string{"max-file": "50", "max-size": "50k"}, container.HostConfig.LogConfig.Config) {
-		t.Errorf("Expected max-file:50 max-size:50k for logconfig options, got %v", container.HostConfig.LogConfig.Config)
-	}
-}
-
-func TestTaskCleanup(t *testing.T) {
-	ctx := context.TODO()
-	// Set the task cleanup time to just over a minute.
-	os.Setenv("ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION", "70s")
-	agent := RunAgent(t, nil)
-	defer func() {
-		agent.Cleanup()
-		os.Unsetenv("ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION")
-	}()
-
-	// Start a task and get the container id once the task transitions to RUNNING.
-	task, err := agent.StartTask(t, cleanupTaskDefinition)
-	if err != nil {
-		t.Fatalf("Error starting task: %v", err)
-	}
-
-	err = task.WaitRunning(2 * time.Minute)
-	if err != nil {
-		t.Fatalf("Error waiting for running task: %v", err)
-	}
-
-	dockerId, err := agent.ResolveTaskDockerID(task, cleanupTaskDefinition)
-	if err != nil {
-		t.Fatalf("Error resolving docker id for container in task: %v", err)
-	}
-
-	// We should be able to inspect the container ID from docker at this point.
-	_, err = agent.DockerClient.ContainerInspect(ctx, dockerId)
-	if err != nil {
-		t.Fatalf("Error inspecting container in task: %v", err)
-	}
-
-	// Stop the task and sleep for 2 minutes to let the task be cleaned up.
-	containerStopTimeout := 1 * time.Second
-	err = agent.DockerClient.ContainerStop(ctx, dockerId, &containerStopTimeout)
-	if err != nil {
-		t.Fatalf("Error stoppping task: %v", err)
-	}
-
-	err = task.WaitStopped(1 * time.Minute)
-	if err != nil {
-		t.Fatalf("Error waiting for task stopped: %v", err)
-	}
-
-	time.Sleep(2 * time.Minute)
-
-	// We should not be able to describe the container now since it has been cleaned up.
-	_, err = agent.DockerClient.ContainerInspect(ctx, dockerId)
-	if err == nil {
-		t.Fatalf("Expected error inspecting container in task")
-	}
-}
-
-// TestNetworkModeNone tests if the 'none' contaienr network mode is configured
-// correctly in task definition
-func TestNetworkModeNone(t *testing.T) {
-	agent := RunAgent(t, nil)
-	defer agent.Cleanup()
-
-	err := networkModeTest(t, agent, "none")
-	if err != nil {
-		t.Fatalf("Networking mode none testing failed, err: %v", err)
-	}
-}
-
-func networkModeTest(t *testing.T, agent *TestAgent, mode string) error {
-	tdOverride := make(map[string]string)
-
-	// Test the host network mode
-	tdOverride["$$$$NETWORK_MODE$$$$"] = mode
-	task, err := agent.StartTaskWithTaskDefinitionOverrides(t, networkModeTaskDefinition, tdOverride)
-	if err != nil {
-		return fmt.Errorf("error starting task with network %v, err: %v", mode, err)
-	}
-	defer func() {
-		if err := task.Stop(); err != nil {
-			return
-		}
-		task.WaitStopped(waitTaskStateChangeDuration)
-	}()
-
-	err = task.WaitRunning(waitTaskStateChangeDuration)
-	if err != nil {
-		return fmt.Errorf("error waiting for task running, err: %v", err)
-	}
-	containerId, err := agent.ResolveTaskDockerID(task, "network-"+mode)
-	if err != nil {
-		return fmt.Errorf("error resolving docker id for container \"network-%s\": %v", mode, err)
-	}
-
-	networks, err := agent.GetContainerNetworkMode(containerId)
-	if err != nil {
-		return err
-	}
-	if len(networks) != 1 {
-		return fmt.Errorf("found multiple networks in container config")
-	}
-	if networks[0] != mode {
-		return fmt.Errorf("did not found the expected network mode")
-	}
-	return nil
 }
 
 // awsvpcNetworkModeTest tests if the 'awsvpc' network mode works properly
@@ -672,10 +514,7 @@ func telemetryStorageStatsTest(t *testing.T, taskDefinition string) {
 	require.NoError(t, err, "Failed to create cluster")
 	defer func() {
 		DeleteCluster(t, newClusterName)
-		// Add delay due to container insights log is aggregated and sent to CW every 1 min
-		// and log group will be recreated if not existed. This can be removed once TACS updates
-		// their logic of handling this use case.
-		time.Sleep(1 * time.Minute)
+		time.Sleep(waitTimeBeforeDeletingCILogGroups)
 		cwlClient := cloudwatchlogs.New(session.New(), aws.NewConfig().WithRegion(*ECS.Config.Region))
 		cwlClient.DeleteLogGroup(&cloudwatchlogs.DeleteLogGroupInput{
 			LogGroupName: aws.String(fmt.Sprintf("/aws/ecs/containerinsights/%s/performance", newClusterName)),
@@ -759,7 +598,7 @@ func telemetryNetworkStatsTest(t *testing.T, networkMode string, taskDefinition 
 	require.NoError(t, err, "Failed to create cluster")
 	defer func() {
 		DeleteCluster(t, newClusterName)
-		time.Sleep(1 * time.Minute)
+		time.Sleep(waitTimeBeforeDeletingCILogGroups)
 		cwlClient := cloudwatchlogs.New(session.New(), aws.NewConfig().WithRegion(*ECS.Config.Region))
 		cwlClient.DeleteLogGroup(&cloudwatchlogs.DeleteLogGroupInput{
 			LogGroupName: aws.String(fmt.Sprintf("/aws/ecs/containerinsights/%s/performance", newClusterName)),
@@ -904,8 +743,8 @@ func waitCloudwatchLogsWithFilter(client *cloudwatchlogs.CloudWatchLogs, params 
 		}
 	}()
 
-	select{
-	case err := <- waitEventErr:
+	select {
+	case err := <-waitEventErr:
 		return output, err
 	case <-timer.C:
 		cancelled = true
